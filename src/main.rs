@@ -18,6 +18,7 @@ use crate::game::meters::{Meters, GameOver};
 use crate::game::scoring::{RepairBill, OwnerType};
 use crate::game::timer::GameTimer;
 use crate::game::items;
+use crate::game::physics::{PhysicsWorld, RigidBody, PhysicsEvent};
 use crate::render::Renderer;
 use crate::core::render_mesh::GpuMesh;
 use glam::{Mat4, Quat, Vec3};
@@ -363,6 +364,7 @@ struct App {
     focused: bool,
     room_dirty: bool,
     particles: ParticleSystem,
+    physics: PhysicsWorld,
     // Attack targeting
     target_marker: Option<Vec3>,  // world position of attack target (mouse raycast)
     mouse_screen: (f32, f32),     // screen pixel coords of mouse
@@ -388,6 +390,7 @@ impl App {
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
             particles: ParticleSystem::new(),
+            physics: PhysicsWorld::new(FLOOR_Y as f32 + 1.0),
             target_marker: None,
             mouse_screen: (640.0, 360.0),
         }
@@ -415,9 +418,56 @@ impl App {
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
-        let cat_r = 8.0; // collision radius — must fit through doors (door_w=28)
+        let cat_r = 5.0; // small enough to fit through doors easily
         let can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
         let can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
+
+        // BODY SLAM: running into objects knocks them over
+        if moved && self.input.sprint {
+            let bump_pos = Vec3::new(
+                if !can_x { nx } else { cat.x } + fwd.x * 3.0,
+                cat.y,
+                if !can_z { nz } else { cat.z } + fwd.z * 3.0,
+            );
+            if !can_x || !can_z {
+                // Destroy voxels at collision point
+                let fwd_v = cat.forward();
+                let rgt_v = cat.right();
+                let debris = self.room.scratch_at(bump_pos, fwd_v, rgt_v);
+                if !debris.is_empty() {
+                    self.particles.spawn_debris(bump_pos, &debris, fwd_v);
+                    // Connectivity check — knocked piece falls
+                    let materials = crate::core::material::MaterialRegistry::default();
+                    let falling = crate::core::destruction::find_disconnected_pieces(
+                        &mut self.room.data, GRID, FLOOR_Y + 1,
+                        bump_pos.x, bump_pos.y, bump_pos.z, 25.0, &materials,
+                    );
+                    for piece in &falling {
+                        for (rel, vox) in &piece.voxels {
+                            self.particles.particles.push(Particle {
+                                x: piece.position[0] + rel[0] as f32,
+                                y: piece.position[1] + rel[1] as f32,
+                                z: piece.position[2] + rel[2] as f32,
+                                vx: fwd_v.x * 15.0, vy: 8.0, vz: fwd_v.z * 15.0,
+                                color: [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8],
+                                life: 2.0,
+                            });
+                        }
+                    }
+                    if let Some(r) = self.renderer.as_mut() {
+                        r.rebuild_chunk_at(&self.room.data, GRID, bump_pos.x, bump_pos.y, bump_pos.z);
+                        for piece in &falling {
+                            r.rebuild_chunk_at(&self.room.data, GRID, piece.position[0], piece.position[1], piece.position[2]);
+                        }
+                    }
+                    self.screen_shake = 0.1;
+                    let value = debris.len() as f32 * 1.5;
+                    self.meters.on_destroy(value, 0.3);
+                    self.bill.record("Furniture", "body slam", value, 1.0);
+                }
+            }
+        }
+
         if can_x { cat.x = nx; }
         if can_z { cat.z = nz; }
         cat.moving = moved && (can_x || can_z);
@@ -494,19 +544,25 @@ impl App {
                     &mut self.room.data, GRID, FLOOR_Y + 1,
                     hit.x, hit.y, hit.z, 30.0, &materials,
                 );
-                // Convert falling debris to particles (visual — they disappear)
+                // Disconnected pieces → RigidBody (they FALL with physics)
                 for piece in &falling {
-                    for (rel_pos, vox) in &piece.voxels {
-                        let wx = piece.position[0] + rel_pos[0] as f32;
-                        let wy = piece.position[1] + rel_pos[1] as f32;
-                        let wz = piece.position[2] + rel_pos[2] as f32;
-                        let color = [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8];
+                    let mass = piece.mass.max(1.0);
+                    let size = (piece.voxels.len() as f32).cbrt().max(2.0);
+                    let pos = Vec3::new(piece.position[0], piece.position[1], piece.position[2]);
+                    self.physics.spawn_debris(
+                        pos, Vec3::new(0.0, -2.0, 0.0), // slight downward push
+                        mass, 1, piece.voxels.len() as f32 * 2.0,
+                    );
+                    // Also spawn visual particles from the piece
+                    for (rel, vox) in piece.voxels.iter().take(30) {
+                        let wx = piece.position[0] + rel[0] as f32;
+                        let wy = piece.position[1] + rel[1] as f32;
+                        let wz = piece.position[2] + rel[2] as f32;
                         self.particles.particles.push(Particle {
                             x: wx, y: wy, z: wz,
-                            vx: (wx - hit.x) * 2.0,
-                            vy: 5.0,
-                            vz: (wz - hit.z) * 2.0,
-                            color, life: 2.5,
+                            vx: 0.0, vy: 0.0, vz: 0.0,
+                            color: [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8],
+                            life: 3.0,
                         });
                     }
                 }
@@ -538,6 +594,36 @@ impl App {
             }
             if self.cat.scratch_phase >= 1.0 { self.cat.scratching = false; }
         }
+
+        // Physics step — falling objects, collisions
+        let phys_events = self.physics.step(dt);
+        for ev in &phys_events {
+            match ev {
+                PhysicsEvent::FloorHit { id, speed } => {
+                    // Falling object hit floor → screen shake + particles
+                    if *speed > 20.0 {
+                        self.screen_shake = (*speed / 100.0).min(0.4);
+                    }
+                    // Find the body and spawn impact particles
+                    if let Some(body) = self.physics.bodies.iter().find(|b| b.id == *id) {
+                        for _ in 0..(*speed as usize / 5).min(20) {
+                            let scatter = ((body.pos.x * 13.0 + body.pos.z * 7.0) % 5.0) - 2.5;
+                            self.particles.particles.push(Particle {
+                                x: body.pos.x + scatter, y: body.pos.y, z: body.pos.z + scatter,
+                                vx: scatter * 8.0, vy: *speed * 0.3, vz: scatter * 8.0,
+                                color: [180, 160, 130], life: 1.0,
+                            });
+                        }
+                    }
+                }
+                PhysicsEvent::Collision { impulse, .. } => {
+                    if *impulse > 50.0 { self.screen_shake = 0.08; }
+                }
+                _ => {}
+            }
+        }
+        // Clean up settled/inactive physics bodies
+        self.physics.bodies.retain(|b| b.active && b.pos.y > -50.0);
 
         // Meters & Timer
         if let Some(game_over) = self.meters.update(dt) {
