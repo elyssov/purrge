@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// PURRGE — Build 9 "Vasya"
+// PURRGE — Build 12 "Leopold"
 // Mesh pipeline (Surface Nets + PBR). No more cubes.
 // Procedural apartment, dog AI, parrot, meters, scoring.
 // ═══════════════════════════════════════════════════════════════
@@ -975,7 +975,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
         if self.win.is_some() { return; }
         let w = Arc::new(el.create_window(Window::default_attributes()
-            .with_title("PURRGE — Build 9 Vasya")
+            .with_title("PURRGE — Build 12 Leopold")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))).unwrap());
 
         // Don't grab cursor in menu — grab on game start
@@ -1081,7 +1081,7 @@ fn main() {
     env_logger::init();
     println!();
     println!("  ═══════════════════════════════════════");
-    println!("  \u{1F431} PURRGE — Build 9 \"Vasya\"");
+    println!("  \u{1F431} PURRGE — Build 12 \"Leopold\"");
     println!("     Mesh pipeline. Surface Nets. PBR.");
     println!("     No more cubes.");
     println!("  ═══════════════════════════════════════");
