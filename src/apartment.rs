@@ -298,7 +298,8 @@ fn place_vase(g: &mut VoxelGrid, rng: &mut Rng, x: f32, y: f32, z: f32) {
 fn place_rug(g: &mut VoxelGrid, rng: &mut Rng, x0: usize, z0: usize, x1: usize, z1: usize) {
     let rugs: [[u8;3]; 5] = [[135,55,65],[55,85,135],[85,130,80],[145,120,80],[110,70,110]];
     let c = rugs[rng.range(0, 4) as usize];
-    g.fill_box(x0, FLOOR_Y+1, z0, x1, FLOOR_Y+1, z1, Voxel::solid(5, c[0], c[1], c[2]));
+    // Rug flush with floor (replace top floor voxels — no bump for cat to trip on)
+    g.fill_box(x0, FLOOR_Y, z0, x1, FLOOR_Y, z1, Voxel::solid(5, c[0], c[1], c[2]));
 }
 
 /// Bed with headboard and pillows

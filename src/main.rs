@@ -301,10 +301,16 @@ fn rasterize_dog_to_grid(dog: &crate::game::dog::Dog, time: f32) -> Vec<Voxel> {
         let breath = 0.02 * (time * 0.5).sin();
         sk.set_rotation("spine1", Quat::from_axis_angle(Vec3::X, breath));
     } else {
-        // Standing / alert
+        // Standing / alert — legs shift weight, body sways
         let breath = 0.03 * (time * 1.0).sin();
         sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::X, breath));
         sk.set_rotation("head", Quat::from_axis_angle(Vec3::X, 0.05 * (time * 1.5).sin()));
+        // Idle leg shifting (subtle weight transfer)
+        let leg_t = time * 0.8;
+        sk.set_rotation("upper_arm_l", Quat::from_axis_angle(Vec3::X, 0.08 * leg_t.sin()));
+        sk.set_rotation("upper_arm_r", Quat::from_axis_angle(Vec3::X, 0.08 * (leg_t + 1.5).sin()));
+        sk.set_rotation("thigh_l", Quat::from_axis_angle(Vec3::X, 0.06 * (leg_t + 0.7).sin()));
+        sk.set_rotation("thigh_r", Quat::from_axis_angle(Vec3::X, 0.06 * (leg_t + 2.2).sin()));
         // Tail wag
         for (i, name) in ["tail1","tail2","tail3"].iter().enumerate() {
             let phase = i as f32 * 0.3;
