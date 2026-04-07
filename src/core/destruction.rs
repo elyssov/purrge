@@ -141,7 +141,7 @@ pub fn destroy_sphere(
 
 /// Find voxel groups not connected to ground near the destruction site.
 /// Returns them as Debris objects (removed from the grid).
-fn find_disconnected_pieces(
+pub fn find_disconnected_pieces(
     voxels: &mut [Voxel],
     size: usize,
     ground_y: usize,

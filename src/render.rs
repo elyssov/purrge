@@ -34,6 +34,11 @@ pub struct Renderer {
     pub cat_mesh: Option<GpuMesh>,
     pub dog_mesh: Option<GpuMesh>,
     pub debris_mesh: Option<GpuMesh>,
+
+    // HUD overlay
+    hud_pipeline: wgpu::RenderPipeline,
+    pub hud_verts: Option<wgpu::Buffer>,
+    pub hud_vert_count: u32,
 }
 
 impl Renderer {
@@ -84,11 +89,45 @@ impl Renderer {
 
         let (_, depth_view) = create_depth_texture(&dev, cfg.width, cfg.height);
 
+        // HUD overlay pipeline (2D, no depth)
+        let hud_shader = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("HUD"), source: wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into()),
+        });
+        let hud_pipeline = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("HUD Pipeline"),
+            layout: Some(&dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[], push_constant_ranges: &[],
+            })),
+            vertex: wgpu::VertexState {
+                module: &hud_shader, entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 8, shader_location: 1 },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &hud_shader, entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: cfg.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(), multiview: None, cache: None,
+        });
+
         Self {
             device: dev, queue: q, surface: surf, config: cfg,
             pipeline, bgl, ubuf, bind_group, depth_view,
             room_chunks: Vec::new(), chunks_per_axis: 0, chunk_size: 64,
             cat_mesh: None, dog_mesh: None, debris_mesh: None,
+            hud_pipeline, hud_verts: None, hud_vert_count: 0,
         }
     }
 
@@ -258,7 +297,39 @@ impl Renderer {
             }
         }
 
+        // HUD overlay pass (no depth, on top of everything)
+        if let Some(hud_vb) = &self.hud_verts {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("HUD"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.hud_pipeline);
+            pass.set_vertex_buffer(0, hud_vb.slice(..));
+            pass.draw(0..self.hud_vert_count, 0..1);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+    }
+
+    /// Upload HUD geometry (screen-space quads in NDC)
+    pub fn upload_hud(&mut self, verts: &[f32]) {
+        if verts.is_empty() {
+            self.hud_verts = None;
+            self.hud_vert_count = 0;
+            return;
+        }
+        self.hud_verts = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("HUD"),
+            contents: bytemuck::cast_slice(verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+        self.hud_vert_count = (verts.len() / 6) as u32; // 6 floats per vertex (xy + rgba)
     }
 }

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// PURRGE — Build 2 "Whiskers"
+// PURRGE — Build 9 "Vasya"
 // Mesh pipeline (Surface Nets + PBR). No more cubes.
 // Procedural apartment, dog AI, parrot, meters, scoring.
 // ═══════════════════════════════════════════════════════════════
@@ -68,6 +68,15 @@ impl CatState {
 
 #[derive(Default)]
 struct Input { forward:bool, back:bool, left:bool, right:bool, jump:bool, scratch_pressed:bool, sprint:bool }
+
+// ─── HUD helpers (NDC screen-space quads) ──────────────────
+/// Push a filled rectangle in NDC coords (-1..1) with color
+fn hud_bar(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) {
+    // Two triangles = 6 vertices, each = x,y, r,g,b,a
+    for &(vx, vy) in &[(x,y), (x+w,y), (x+w,y+h), (x,y), (x+w,y+h), (x,y+h)] {
+        verts.extend_from_slice(&[vx, vy, r, g, b, a]);
+    }
+}
 
 // ─── Debris Particles ──────────────────────────────────────
 struct Particle {
@@ -477,11 +486,45 @@ impl App {
 
                 self.screen_shake = 0.15;
                 self.hitstop = 0.05;
-                // Chunk rebuild at hit point (fast — only 64³ chunk, not full room)
+
+                // CONNECTIVITY CHECK: find pieces no longer connected to floor/walls
+                // If you break the TV stand leg → TV falls!
+                let materials = crate::core::material::MaterialRegistry::default();
+                let falling = crate::core::destruction::find_disconnected_pieces(
+                    &mut self.room.data, GRID, FLOOR_Y + 1,
+                    hit.x, hit.y, hit.z, 30.0, &materials,
+                );
+                // Convert falling debris to particles (visual — they disappear)
+                for piece in &falling {
+                    for (rel_pos, vox) in &piece.voxels {
+                        let wx = piece.position[0] + rel_pos[0] as f32;
+                        let wy = piece.position[1] + rel_pos[1] as f32;
+                        let wz = piece.position[2] + rel_pos[2] as f32;
+                        let color = [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8];
+                        self.particles.particles.push(Particle {
+                            x: wx, y: wy, z: wz,
+                            vx: (wx - hit.x) * 2.0,
+                            vy: 5.0,
+                            vz: (wz - hit.z) * 2.0,
+                            color, life: 2.5,
+                        });
+                    }
+                }
+                if !falling.is_empty() {
+                    self.screen_shake = 0.3; // bigger shake for chain reaction!
+                    println!("  Chain reaction! {} pieces fell ({} voxels)",
+                        falling.len(), falling.iter().map(|d| d.voxels.len()).sum::<usize>());
+                }
+
+                // Chunk rebuild at hit point
                 if let Some(r) = self.renderer.as_mut() {
                     r.rebuild_chunk_at(&self.room.data, GRID, hit.x, hit.y, hit.z);
-                    // Also rebuild adjacent chunk if near boundary
                     r.rebuild_chunk_at(&self.room.data, GRID, hit_low.x, hit_low.y, hit_low.z);
+                    // Rebuild chunks where debris fell from
+                    for piece in &falling {
+                        r.rebuild_chunk_at(&self.room.data, GRID,
+                            piece.position[0], piece.position[1], piece.position[2]);
+                    }
                 }
 
                 let destroyed = d1.len() + d2.len();
@@ -644,17 +687,26 @@ impl App {
             renderer.dog_mesh = crate::core::render_mesh::GpuMesh::from_chunk_mesh(&renderer.device, &mesh);
         }
 
-        // ── MENU MODE: cinematic camera, title screen ──
+        // ── MENU MODE: cinematic camera + title overlay ──
         if self.state.is_menu() {
-            if let Some(w) = &self.win {
-                w.set_title("PURRGE — Press SPACE to play!");
-                w.set_cursor_visible(true);
-            }
-            // Slow orbit around room center
             let center = Vec3::new(GRID as f32 * 0.5, 40.0, GRID as f32 * 0.5);
             let menu_angle = self.time * 0.15;
             let eye = center + Vec3::new(menu_angle.sin() * 120.0, 100.0, menu_angle.cos() * 120.0);
+
+            // Menu HUD overlay
+            let mut hud = Vec::new();
+            // Dark backdrop
+            hud_bar(&mut hud, -1.0, -0.15, 2.0, 0.3, 0.0, 0.0, 0.0, 0.7);
+            // Title bar (orange)
+            hud_bar(&mut hud, -0.6, 0.0, 1.2, 0.08, 0.9, 0.5, 0.1, 1.0);
+            // "Press SPACE" hint bar (dim)
+            hud_bar(&mut hud, -0.35, -0.1, 0.7, 0.04, 0.5, 0.5, 0.5, 0.8);
+
+            renderer.upload_hud(&hud);
             renderer.render(eye, center, 0.0, self.time);
+            if let Some(w) = &self.win {
+                w.set_title("PURRGE — Press SPACE / Enter / Click to play!");
+            }
             self.win.as_ref().unwrap().request_redraw();
             return;
         }
@@ -713,6 +765,39 @@ impl App {
             eye.y += (self.time * 53.0).cos() * amt;
         }
 
+        // ── HUD BARS ──
+        let mut hud = Vec::new();
+        let bar_h = 0.025;
+        let bar_y_start = 0.92;
+        let bar_w = 0.4;
+        let bar_x = -0.95;
+
+        // Background bars (dark)
+        hud_bar(&mut hud, bar_x, bar_y_start, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
+        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 1.5, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
+        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 3.0, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
+
+        // Boredom bar (yellow → green as it decreases — high = bad)
+        let bored = self.meters.boredom / 100.0;
+        hud_bar(&mut hud, bar_x, bar_y_start, bar_w * bored, bar_h, 0.9, 0.8, 0.1, 0.9);
+
+        // Annoyance bar (red — high = thrown out)
+        let annoy = self.meters.annoyance / 100.0;
+        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 1.5, bar_w * annoy, bar_h, 0.9, 0.2, 0.15, 0.9);
+
+        // Damage $ bar (gold — grows with destruction)
+        let dmg = (self.bill.total() / 5000.0).min(1.0);
+        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 3.0, bar_w * dmg, bar_h, 0.95, 0.75, 0.2, 0.9);
+
+        // Lives dots (green circles → red)
+        for i in 0..9 {
+            let alive = (i as f32) < self.meters.lives as f32;
+            let dot_x = 0.55 + i as f32 * 0.045;
+            let (r, g, b) = if alive { (0.2, 0.85, 0.3) } else { (0.3, 0.15, 0.1) };
+            hud_bar(&mut hud, dot_x, bar_y_start, 0.03, bar_h, r, g, b, 0.9);
+        }
+
+        renderer.upload_hud(&hud);
         renderer.render(eye, target, self.screen_shake, self.time);
         self.win.as_ref().unwrap().request_redraw();
     }
@@ -722,7 +807,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
         if self.win.is_some() { return; }
         let w = Arc::new(el.create_window(Window::default_attributes()
-            .with_title("PURRGE — Build 2 Whiskers (Mesh Pipeline)")
+            .with_title("PURRGE — Build 9 Vasya")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))).unwrap());
 
         // Don't grab cursor in menu — grab on game start
@@ -828,7 +913,7 @@ fn main() {
     env_logger::init();
     println!();
     println!("  ═══════════════════════════════════════");
-    println!("  \u{1F431} PURRGE — Build 2 \"Whiskers\"");
+    println!("  \u{1F431} PURRGE — Build 9 \"Vasya\"");
     println!("     Mesh pipeline. Surface Nets. PBR.");
     println!("     No more cubes.");
     println!("  ═══════════════════════════════════════");
