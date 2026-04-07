@@ -138,25 +138,52 @@ fn animate_cat(sk: &mut Skeleton, cat: &CatState, t: f32) {
         sk.set_rotation("spine1", Quat::from_axis_angle(Vec3::Y, fx));
         sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::Y, -fx*0.7));
     }
-    // Scratch
+    // Scratch: crouch on all fours, then swipe with front paw
     if cat.scratching {
         let p = cat.scratch_phase;
+        // Phase 1 (0.0-0.4): CROUCH — all legs bend, body lowers, arm winds up
         if p < 0.4 {
-            let s = { let l = p/0.4; l*l*(3.0-2.0*l) };
-            sk.set_rotation("upper_arm_r", Quat::from_axis_angle(Vec3::X, -1.6*s)*Quat::from_axis_angle(Vec3::Z, 0.6*s));
-            sk.set_rotation("forearm_r", Quat::from_axis_angle(Vec3::X, 2.0*s));
-            sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::X, -0.2*s));
+            let s = { let l = p/0.4; l*l*(3.0-2.0*l) }; // smoothstep
+            // Crouch: bend all legs
+            for leg in ["upper_arm_l","upper_arm_r"] {
+                sk.set_rotation(leg, Quat::from_axis_angle(Vec3::X, 0.4*s));
+            }
+            for leg in ["forearm_l","forearm_r"] {
+                sk.set_hinge_angle(leg, 0.6*s);
+            }
+            for leg in ["thigh_l","thigh_r"] {
+                sk.set_rotation(leg, Quat::from_axis_angle(Vec3::X, 0.3*s));
+            }
+            sk.set_hinge_angle("shin_l", 0.6*s + 0.087);
+            sk.set_hinge_angle("shin_r", 0.6*s + 0.087);
+            // Wind up right paw
+            sk.set_rotation("upper_arm_r", Quat::from_axis_angle(Vec3::X, -1.6*s) * Quat::from_axis_angle(Vec3::Z, 0.6*s));
+            sk.set_rotation("forearm_r", Quat::from_axis_angle(Vec3::X, 1.5*s));
+            // Spine dips, ears back
+            sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::X, -0.15*s));
             sk.set_rotation("ear_l", Quat::from_axis_angle(Vec3::X, 0.4*s));
             sk.set_rotation("ear_r", Quat::from_axis_angle(Vec3::X, 0.4*s));
-        } else if p < 0.55 {
-            let s = { let l = (p-0.4)/0.15; l*l };
+        }
+        // Phase 2 (0.4-0.55): STRIKE — paw swipes forward explosively
+        else if p < 0.55 {
+            let s = { let l = (p-0.4)/0.15; l*l }; // quadratic
+            // Maintain crouch
+            for leg in ["thigh_l","thigh_r"] { sk.set_rotation(leg, Quat::from_axis_angle(Vec3::X, 0.3)); }
+            sk.set_hinge_angle("shin_l", 0.687); sk.set_hinge_angle("shin_r", 0.687);
+            // Paw strikes forward
             sk.set_rotation("upper_arm_r", Quat::from_axis_angle(Vec3::X, -1.6+3.2*s)*Quat::from_axis_angle(Vec3::Z, 0.6*(1.0-s)));
-            sk.set_rotation("forearm_r", Quat::from_axis_angle(Vec3::X, 2.0*(1.0-s)));
-            sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::X, -0.2+0.35*s));
-        } else {
-            let s = { let l = ((p-0.55)/0.45).min(1.0); l*l*(3.0-2.0*l) };
+            sk.set_rotation("forearm_r", Quat::from_axis_angle(Vec3::X, 1.5*(1.0-s)));
+            sk.set_rotation("spine2", Quat::from_axis_angle(Vec3::X, -0.15+0.3*s));
+        }
+        // Phase 3 (0.55-1.0): RECOVER — stand back up smoothly
+        else {
+            let s = { let l = ((p-0.55)/0.45).min(1.0); l*l*(3.0-2.0*l) }; // smoothstep
+            // Uncrouch legs
+            for leg in ["thigh_l","thigh_r"] { sk.set_rotation(leg, Quat::from_axis_angle(Vec3::X, 0.3*(1.0-s))); }
+            let knee = 0.687 * (1.0-s) + 0.087;
+            sk.set_hinge_angle("shin_l", knee); sk.set_hinge_angle("shin_r", knee);
+            // Arm returns
             sk.set_rotation("upper_arm_r", Quat::from_axis_angle(Vec3::X, 1.6*(1.0-s)));
-            sk.set_rotation("forearm_r", Quat::from_axis_angle(Vec3::X, 0.05));
         }
     }
 }
@@ -243,6 +270,7 @@ struct App {
     bill: RepairBill,
     state: GameState,
     cam_pitch: f32,
+    cam_yaw: f32,   // free camera rotation around cat (mouse X)
     time: f32,
     frame_count: u32,
     screen_shake: f32,
@@ -267,7 +295,7 @@ impl App {
             meters: Meters::new(), timer: GameTimer::new(),
             bill: RepairBill::new(owner),
             state: GameState::Playing,
-            cam_pitch: 0.55, time: 0.0, frame_count: 0,
+            cam_pitch: 0.55, cam_yaw: 0.0, time: 0.0, frame_count: 0,
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
         }
@@ -279,15 +307,19 @@ impl App {
         if self.screen_shake > 0.0 { self.screen_shake -= dt; }
 
         let cat = &mut self.cat;
-        let fwd = cat.forward();
-        let rgt = cat.right();
         let spd = if self.input.sprint { MOVE_SPEED * 2.2 } else { MOVE_SPEED };
+
+        // AD = turn cat
+        let turn_speed = 3.0 * dt;
+        if self.input.left  { cat.facing += turn_speed; }
+        if self.input.right { cat.facing -= turn_speed; }
+
+        // WS = move forward/backward along cat's facing direction
+        let fwd = cat.forward();
         let (mut nx, mut nz) = (cat.x, cat.z);
         let mut moved = false;
         if self.input.forward { nx += fwd.x*spd*dt; nz += fwd.z*spd*dt; moved = true; }
         if self.input.back    { nx -= fwd.x*spd*dt*0.6; nz -= fwd.z*spd*dt*0.6; moved = true; }
-        if self.input.left    { nx -= rgt.x*spd*dt*0.7; nz -= rgt.z*spd*dt*0.7; moved = true; }
-        if self.input.right   { nx += rgt.x*spd*dt*0.7; nz += rgt.z*spd*dt*0.7; moved = true; }
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
@@ -438,12 +470,16 @@ impl App {
             renderer.dog_mesh = crate::core::render_mesh::GpuMesh::from_chunk_mesh(&renderer.device, &mesh);
         }
 
-        // Camera
-        let fwd = self.cat.forward();
+        // Camera — free orbit around cat (mouse controls camera, AD controls cat)
         let cat_pos = Vec3::new(self.cat.x, self.cat.y, self.cat.z);
         let cam_dist = 70.0;
-        let mut eye = cat_pos - fwd * cam_dist * self.cam_pitch.cos() + Vec3::Y * cam_dist * self.cam_pitch.sin();
-        let target = cat_pos + fwd * 15.0 - Vec3::Y * 5.0;
+        let cam_dir = Vec3::new(
+            self.cam_yaw.sin() * self.cam_pitch.cos(),
+            self.cam_pitch.sin(),
+            self.cam_yaw.cos() * self.cam_pitch.cos(),
+        );
+        let mut eye = cat_pos + cam_dir * cam_dist;
+        let target = cat_pos + Vec3::Y * 5.0;
 
         // Camera collision
         let cam_dir = (eye - cat_pos).normalize();
@@ -484,7 +520,8 @@ impl ApplicationHandler for App {
     fn device_event(&mut self, _: &winit::event_loop::ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         if !self.focused || !self.state.is_playing() { return; }
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.cat.facing -= delta.0 as f32 * MOUSE_SENS;
+            // Mouse controls CAMERA, not cat. AD controls cat turning.
+            self.cam_yaw -= delta.0 as f32 * MOUSE_SENS;
             self.cam_pitch = (self.cam_pitch + delta.1 as f32 * MOUSE_SENS).clamp(0.15, 1.1);
         }
     }
