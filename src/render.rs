@@ -34,6 +34,7 @@ pub struct Renderer {
     pub cat_mesh: Option<GpuMesh>,
     pub dog_mesh: Option<GpuMesh>,
     pub debris_mesh: Option<GpuMesh>,
+    pub furniture_meshes: Vec<Option<GpuMesh>>,
 
     // HUD overlay
     hud_pipeline: wgpu::RenderPipeline,
@@ -127,6 +128,7 @@ impl Renderer {
             pipeline, bgl, ubuf, bind_group, depth_view,
             room_chunks: Vec::new(), chunks_per_axis: 0, chunk_size: 64,
             cat_mesh: None, dog_mesh: None, debris_mesh: None,
+            furniture_meshes: Vec::new(),
             hud_pipeline, hud_verts: None, hud_vert_count: 0,
         }
     }
@@ -287,6 +289,15 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+
+            // Draw furniture
+            for fmesh in &self.furniture_meshes {
+                if let Some(mesh) = fmesh {
+                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                }
             }
 
             // Draw debris

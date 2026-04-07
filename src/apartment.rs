@@ -3,6 +3,7 @@
 // Procedural apartment with 3-4 rooms. Uses engine Voxel type.
 // ═══════════════════════════════════════════════════════════════
 
+use glam::Vec3;
 use crate::core::svo::Voxel;
 use crate::core::procgen::Rng;
 
@@ -602,4 +603,125 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
 
     g.hollow();
     g
+}
+
+/// V2: Generate apartment structure (walls/floor ONLY) + separate furniture objects.
+/// Objects have physics, mass, can fall independently.
+pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::FurnitureObj>) {
+    use crate::furniture::*;
+
+    let mut g = VoxelGrid::new();
+    let mut rng = Rng::new(seed);
+    let mut furniture = Vec::new();
+
+    let m = 6_usize; let w = 3_usize; let h = 140_usize;
+
+    // Procedural room count: 2-4 rooms
+    let num_rooms = 2 + rng.range(0, 2) as usize; // 2, 3, or 4
+
+    // Procedural wall positions
+    let wall_z = 80 + rng.range(0, 40) as usize;
+    let wall_x = if num_rooms >= 3 { Some(80 + rng.range(0, 30) as usize) } else { None };
+
+    // Floor/ceiling/wall colors
+    let fl = vary(&mut rng, 175, 150, 110, 12);
+    let wl = vary(&mut rng, 228, 222, 212, 8);
+    let cl = vary(&mut rng, 242, 242, 248, 4);
+
+    // ── STRUCTURE ──
+    g.fill_box(m, 0, m, GRID-m, FLOOR_Y, GRID-m, fl);     // floor
+    g.fill_box(m, h-w, m, GRID-m, h, GRID-m, cl);          // ceiling
+    // Outer walls
+    g.fill_box(m, 0, GRID-m-w, GRID-m, h, GRID-m, wl);
+    g.fill_box(m, 0, m, GRID-m, h, m+w, wl);
+    g.fill_box(m, 0, m, m+w, h, GRID-m, wl);
+    g.fill_box(GRID-m-w, 0, m, GRID-m, h, GRID-m, wl);
+
+    // Horizontal divider wall
+    g.fill_box(m, 0, wall_z, GRID-m, h, wall_z+w, wl);
+
+    // Vertical divider (if 3+ rooms)
+    if let Some(wx) = wall_x {
+        g.fill_box(wx, 0, wall_z+w, wx+w, h, GRID-m, wl);
+    }
+
+    // Doors
+    let door_w = 28_usize; let door_h = 56_usize;
+    let frame = Voxel::solid(1, 160, 130, 90);
+
+    // Door 1 (horizontal wall, left side)
+    let d1x = m + w + 15 + rng.range(0, 30) as usize;
+    g.fill_box(d1x, FLOOR_Y+1, wall_z, d1x+door_w, door_h, wall_z+w, Voxel::empty());
+    g.fill_box(d1x-2, FLOOR_Y+1, wall_z, d1x, door_h+2, wall_z+w, frame);
+    g.fill_box(d1x+door_w, FLOOR_Y+1, wall_z, d1x+door_w+2, door_h+2, wall_z+w, frame);
+    g.fill_box(d1x-2, door_h, wall_z, d1x+door_w+2, door_h+2, wall_z+w, frame);
+
+    // Door 2 (if vertical wall exists)
+    if let Some(wx) = wall_x {
+        let d2z = wall_z + w + 15 + rng.range(0, 20) as usize;
+        g.fill_box(wx, FLOOR_Y+1, d2z, wx+w, door_h, d2z+door_w, Voxel::empty());
+        g.fill_box(wx, FLOOR_Y+1, d2z-2, wx+w, door_h+2, d2z, frame);
+        g.fill_box(wx, FLOOR_Y+1, d2z+door_w, wx+w, door_h+2, d2z+door_w+2, frame);
+    }
+
+    // Door on right side of horizontal wall (if 3+ rooms)
+    if num_rooms >= 3 {
+        let d3x = (wall_x.unwrap_or(GRID/2)) + w + 10 + rng.range(0, 20) as usize;
+        if d3x + door_w < GRID - m - w {
+            g.fill_box(d3x, FLOOR_Y+1, wall_z, d3x+door_w, door_h, wall_z+w, Voxel::empty());
+            g.fill_box(d3x-2, FLOOR_Y+1, wall_z, d3x, door_h+2, wall_z+w, frame);
+            g.fill_box(d3x+door_w, FLOOR_Y+1, wall_z, d3x+door_w+2, door_h+2, wall_z+w, frame);
+        }
+    }
+
+    // ── FURNITURE (separate objects!) ──
+
+    // Room 1: Living room (front-left, m..GRID, m..wall_z)
+    let lr_cx = (m + w + GRID - m - w) / 2;
+    let lr_cz = (m + w + wall_z) / 2;
+
+    furniture.push(make_sofa(&mut rng,
+        Vec3::new((m + w + 5) as f32, FLOOR_Y as f32 + 1.0, (lr_cz - 15) as f32)));
+    furniture.push(make_table(&mut rng,
+        Vec3::new((lr_cx - 15) as f32, FLOOR_Y as f32 + 1.0, (lr_cz - 15) as f32)));
+
+    // TV stand + TV on top
+    let tv_x = GRID - m - w - 20;
+    let tv_stand_y = FLOOR_Y + 1;
+    furniture.push(make_tv_stand(&mut rng,
+        Vec3::new(tv_x as f32, tv_stand_y as f32, (lr_cz - 4) as f32)));
+    furniture.push(make_tv(&mut rng,
+        Vec3::new(tv_x as f32, (tv_stand_y + 15) as f32, (lr_cz - 4) as f32))); // ON TOP of stand
+
+    // Vase on table
+    furniture.push(make_vase(&mut rng,
+        Vec3::new((lr_cx - 12) as f32, (FLOOR_Y + 32) as f32, (lr_cz - 12) as f32))); // on table
+
+    furniture.push(make_lamp(&mut rng,
+        Vec3::new((m + w + 4) as f32, FLOOR_Y as f32 + 1.0, (m + w + 4) as f32)));
+
+    // Room 2: Back room (m..GRID, wall_z+w..GRID)
+    let br_cz = (wall_z + w + GRID - m - w) / 2;
+    furniture.push(make_bookshelf(&mut rng,
+        Vec3::new((m + w + 5) as f32, FLOOR_Y as f32 + 1.0, (wall_z + w + 5) as f32)));
+
+    // Random extra furniture
+    let extras = rng.range(2, 5) as usize;
+    for _ in 0..extras {
+        let fx = m + w + 10 + rng.range(0, (GRID - 2*m - 2*w - 40) as i32) as usize;
+        let fz = wall_z + w + 10 + rng.range(0, (GRID - wall_z - m - w - 40) as i32).max(1) as usize;
+        match rng.range(0, 3) {
+            0 => furniture.push(make_chair(&mut rng, Vec3::new(fx as f32, FLOOR_Y as f32 + 1.0, fz as f32))),
+            1 => furniture.push(make_lamp(&mut rng, Vec3::new(fx as f32, FLOOR_Y as f32 + 1.0, fz as f32))),
+            2 => furniture.push(make_vase(&mut rng, Vec3::new(fx as f32, FLOOR_Y as f32 + 1.0, fz as f32))),
+            _ => furniture.push(make_bookshelf(&mut rng, Vec3::new(fx as f32, FLOOR_Y as f32 + 1.0, fz as f32))),
+        }
+    }
+
+    // Fridge (always in a corner)
+    furniture.push(make_fridge(&mut rng,
+        Vec3::new((GRID - m - w - 18) as f32, FLOOR_Y as f32 + 1.0, (m + w + 4) as f32)));
+
+    g.hollow();
+    (g, furniture)
 }

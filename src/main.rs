@@ -8,8 +8,10 @@ mod core;
 mod game;
 mod render;
 mod apartment;
+mod furniture;
 
-use crate::apartment::{VoxelGrid, generate_apartment, GRID, FLOOR_Y};
+use crate::apartment::{VoxelGrid, generate_apartment_v2, GRID, FLOOR_Y};
+use crate::furniture::FurnitureObj;
 use crate::core::body::BodyDefinition;
 use crate::core::skeleton::Skeleton;
 use crate::core::svo::Voxel;
@@ -365,6 +367,7 @@ struct App {
     room_dirty: bool,
     particles: ParticleSystem,
     physics: PhysicsWorld,
+    furniture: Vec<FurnitureObj>,
     // Attack targeting
     target_marker: Option<Vec3>,  // world position of attack target (mouse raycast)
     mouse_screen: (f32, f32),     // screen pixel coords of mouse
@@ -374,7 +377,7 @@ impl App {
     fn new() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(42);
-        let room = generate_apartment(seed);
+        let (room, furniture) = generate_apartment_v2(seed);
         let owners = [OwnerType::Normal, OwnerType::Gamer, OwnerType::Bookworm, OwnerType::Minimalist];
         let owner = owners[(seed % owners.len() as u64) as usize].clone();
         println!("  Owner: {:?}, Seed: {}", owner, seed);
@@ -391,6 +394,7 @@ impl App {
             focused: true, room_dirty: true,
             particles: ParticleSystem::new(),
             physics: PhysicsWorld::new(FLOOR_Y as f32 + 1.0),
+            furniture,
             target_marker: None,
             mouse_screen: (640.0, 360.0),
         }
@@ -529,6 +533,12 @@ impl App {
                 let rgt = fwd.cross(Vec3::Y).normalize();
                 let d1 = self.room.scratch_at(hit, fwd, rgt);
                 let d2 = self.room.scratch_at(hit_low, fwd, rgt);
+                // Also scratch furniture objects!
+                for f in &mut self.furniture {
+                    if f.shattered { continue; }
+                    f.scratch_world(hit, 4.0);
+                    f.scratch_world(hit_low, 4.0);
+                }
 
                 // VKUSNO: spawn debris particles flying outward!
                 self.particles.spawn_debris(hit, &d1, fwd);
@@ -624,6 +634,65 @@ impl App {
         }
         // Clean up settled/inactive physics bodies
         self.physics.bodies.retain(|b| b.active && b.pos.y > -50.0);
+
+        // Furniture support check — objects without support START FALLING
+        // Simple: check if room grid has solid voxels under any bottom voxel of the object
+        for f in &mut self.furniture {
+            if f.falling || f.shattered { continue; }
+            let mut supported = false;
+            let gs = f.grid_size;
+            'outer: for z in 0..gs {
+                for x in 0..gs {
+                    for y in 0..gs {
+                        if f.get(x, y, z).is_solid() {
+                            // Check one voxel below in world coords
+                            let wy = (f.pos.y + y as f32 - 1.0) as usize;
+                            let wx = (f.pos.x + x as f32) as usize;
+                            let wz = (f.pos.z + z as f32) as usize;
+                            if wx < GRID && wy < GRID && wz < GRID && self.room.get(wx, wy, wz).is_solid() {
+                                supported = true;
+                                break 'outer;
+                            }
+                            break; // only check lowest in column
+                        }
+                    }
+                }
+            }
+            // Also check: is object resting on floor directly?
+            if f.pos.y <= FLOOR_Y as f32 + 2.0 { supported = true; }
+
+            if !supported {
+                f.falling = true;
+                f.vel = Vec3::new(0.0, -5.0, 0.0);
+                println!("  {} lost support — FALLING!", f.name);
+            }
+        }
+
+        // Update falling furniture
+        let floor = FLOOR_Y as f32 + 1.0;
+        for f in &mut self.furniture {
+            let shattered = f.update(dt, floor);
+            if shattered {
+                // Object shattered on impact — spawn particles
+                self.screen_shake = 0.2;
+                for z in 0..f.grid_size { for y in 0..f.grid_size { for x in 0..f.grid_size {
+                    if f.get(x, y, z).is_solid() {
+                        let v = f.get(x, y, z);
+                        self.particles.particles.push(Particle {
+                            x: f.pos.x + x as f32, y: f.pos.y + y as f32, z: f.pos.z + z as f32,
+                            vx: (x as f32 - f.grid_size as f32 * 0.5) * 8.0,
+                            vy: 15.0,
+                            vz: (z as f32 - f.grid_size as f32 * 0.5) * 8.0,
+                            color: [(v.packed >> 16) as u8, (v.packed >> 8) as u8, v.packed as u8],
+                            life: 2.0,
+                        });
+                    }
+                }}}
+                println!("  {} SHATTERED! ${:.0} damage", f.name, f.value);
+                self.bill.record(&f.name, "shattered", f.value, 1.0);
+            }
+            if f.falling { f.mesh_dirty = true; }
+        }
 
         // Meters & Timer
         if let Some(game_over) = self.meters.update(dt) {
@@ -771,6 +840,19 @@ impl App {
                 ws,
             );
             renderer.dog_mesh = crate::core::render_mesh::GpuMesh::from_chunk_mesh(&renderer.device, &mesh);
+        }
+
+        // Rebuild furniture meshes (only when dirty — position changed, damaged, etc.)
+        if renderer.furniture_meshes.len() != self.furniture.len() {
+            renderer.furniture_meshes = (0..self.furniture.len()).map(|_| None).collect();
+        }
+        for (i, f) in self.furniture.iter_mut().enumerate() {
+            if f.shattered { renderer.furniture_meshes[i] = None; continue; }
+            if f.mesh_dirty || renderer.furniture_meshes[i].is_none() {
+                let mesh = f.build_mesh();
+                renderer.furniture_meshes[i] = crate::core::render_mesh::GpuMesh::from_chunk_mesh(&renderer.device, &mesh);
+                f.mesh_dirty = false;
+            }
         }
 
         // ── MENU MODE: cinematic camera + title overlay ──
