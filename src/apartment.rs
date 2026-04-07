@@ -452,7 +452,7 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
     g.fill_box(wall_x, 0, wall_z+w, wall_x+w, h, GRID-m, wl);
 
     // ── DOORS with frames ──
-    let door_w = 22_usize; let door_h = 56_usize;
+    let door_w = 28_usize; let door_h = 56_usize; // wide enough for cat (radius 8)
     let frame = Voxel::solid(1, 160, 130, 90); // wooden door frame
 
     // Door 1: living room ↔ bedroom

@@ -354,6 +354,9 @@ struct App {
     focused: bool,
     room_dirty: bool,
     particles: ParticleSystem,
+    // Attack targeting
+    target_marker: Option<Vec3>,  // world position of attack target (mouse raycast)
+    mouse_screen: (f32, f32),     // screen pixel coords of mouse
 }
 
 impl App {
@@ -376,6 +379,8 @@ impl App {
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
             particles: ParticleSystem::new(),
+            target_marker: None,
+            mouse_screen: (640.0, 360.0),
         }
     }
 
@@ -401,7 +406,7 @@ impl App {
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
-        let cat_r = 12.0; // collision radius in world units — cat body ~20 wide
+        let cat_r = 8.0; // collision radius — must fit through doors (door_w=28)
         let can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
         let can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
         if can_x { cat.x = nx; }
@@ -457,9 +462,12 @@ impl App {
             self.cat.scratch_phase += dt * SCRATCH_SPEED;
             if !self.cat.scratch_fired && old < 0.45 && self.cat.scratch_phase >= 0.45 {
                 self.cat.scratch_fired = true;
-                let fwd = self.cat.forward(); let rgt = self.cat.right();
-                let hit = Vec3::new(self.cat.x, self.cat.y, self.cat.z) + fwd * SCRATCH_RANGE;
-                let hit_low = Vec3::new(self.cat.x, self.cat.y - LEG_HEIGHT*0.5, self.cat.z) + fwd * SCRATCH_RANGE * 0.9;
+                // Hit where the marker is (mouse-aimed), or fallback to forward
+                let cat_pos = Vec3::new(self.cat.x, self.cat.y, self.cat.z);
+                let hit = self.target_marker.unwrap_or(cat_pos + self.cat.forward() * SCRATCH_RANGE);
+                let hit_low = Vec3::new(hit.x, hit.y - LEG_HEIGHT * 0.3, hit.z);
+                let fwd = (hit - cat_pos).normalize();
+                let rgt = fwd.cross(Vec3::Y).normalize();
                 let d1 = self.room.scratch_at(hit, fwd, rgt);
                 let d2 = self.room.scratch_at(hit_low, fwd, rgt);
 
@@ -519,8 +527,9 @@ impl App {
         if self.state.is_playing() { self.update(dt); }
         self.particles.update(dt);
 
-        // Render particles as debris mesh (use room grid directly — particles are sparse)
-        if !self.particles.particles.is_empty() && self.frame_count % 2 == 0 {
+        // Render particles + target marker as debris mesh
+        let has_marker = self.target_marker.is_some() && !self.cat.scratching;
+        if (!self.particles.particles.is_empty() || has_marker) && self.frame_count % 2 == 0 {
             // Build small mesh from particles using simple quads
             let mut verts: Vec<f32> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
@@ -547,6 +556,38 @@ impl App {
                     vi += 4;
                 }
             }
+            // Add target marker (pulsing cross)
+            if let Some(marker) = self.target_marker {
+                if !self.cat.scratching {
+                    let pulse = 0.5 + 0.5 * (self.time * 8.0).sin();
+                    let mr = 0.9 * pulse + 0.1;
+                    let mg = 0.3 + 0.5 * pulse;
+                    let mb = 0.1;
+                    let ms = 1.8; // marker cube size
+                    // Cross: 7 cubes
+                    for &(dx, dy, dz) in &[(0.0,0.0,0.0),(ms*2.0,0.0,0.0),(-ms*2.0,0.0,0.0),
+                                           (0.0,ms*2.0,0.0),(0.0,-ms*2.0,0.0),(0.0,0.0,ms*2.0),(0.0,0.0,-ms*2.0)] {
+                        let cx = marker.x + dx;
+                        let cy = marker.y + dy;
+                        let cz = marker.z + dz;
+                        for &(nx,ny,nz, dx0,dy0,dz0, dx1,dy1,dz1, dx2,dy2,dz2, dx3,dy3,dz3) in &[
+                            (0.0,0.0,1.0, -ms,-ms,ms, ms,-ms,ms, ms,ms,ms, -ms,ms,ms),
+                            (0.0,0.0,-1.0, ms,-ms,-ms, -ms,-ms,-ms, -ms,ms,-ms, ms,ms,-ms),
+                            (0.0,1.0,0.0, -ms,ms,ms, ms,ms,ms, ms,ms,-ms, -ms,ms,-ms),
+                            (0.0,-1.0,0.0, -ms,-ms,-ms, ms,-ms,-ms, ms,-ms,ms, -ms,-ms,ms),
+                            (1.0,0.0,0.0, ms,-ms,ms, ms,-ms,-ms, ms,ms,-ms, ms,ms,ms),
+                            (-1.0,0.0,0.0, -ms,-ms,-ms, -ms,-ms,ms, -ms,ms,ms, -ms,ms,-ms),
+                        ] {
+                            for &(ddx,ddy,ddz) in &[(dx0,dy0,dz0),(dx1,dy1,dz1),(dx2,dy2,dz2),(dx3,dy3,dz3)] {
+                                verts.extend_from_slice(&[cx+ddx, cy+ddy, cz+ddz, nx, ny, nz, mr, mg, mb, 1.0]);
+                            }
+                            indices.extend_from_slice(&[vi,vi+1,vi+2, vi,vi+2,vi+3]);
+                            vi += 4;
+                        }
+                    }
+                }
+            }
+
             if let Some(renderer) = self.renderer.as_mut() {
                 let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Particles"), contents: bytemuck::cast_slice(&verts),
@@ -558,7 +599,7 @@ impl App {
                 });
                 renderer.debris_mesh = Some(GpuMesh { vertex_buffer: vb, index_buffer: ib, index_count: indices.len() as u32 });
             }
-        } else if self.particles.particles.is_empty() {
+        } else if self.particles.particles.is_empty() && !has_marker {
             if let Some(r) = self.renderer.as_mut() { r.debris_mesh = None; }
         }
 
@@ -623,6 +664,33 @@ impl App {
             else if safe <= 8.0 { eye = cat_pos + cam_dir * 8.0 + Vec3::Y * 10.0; }
         }
 
+        // Attack target marker — raycast from camera through mouse position
+        let view_mat = Mat4::look_at_rh(eye, target, Vec3::Y);
+        let proj_mat = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, renderer.config.width as f32 / renderer.config.height as f32, 0.1, 1000.0);
+        let inv_vp = (proj_mat * view_mat).inverse();
+        let ndc_x = (2.0 * self.mouse_screen.0 / renderer.config.width as f32) - 1.0;
+        let ndc_y = 1.0 - (2.0 * self.mouse_screen.1 / renderer.config.height as f32);
+        let near = inv_vp * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv_vp * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let ray_origin = near.truncate() / near.w;
+        let ray_target = far.truncate() / far.w;
+        let ray_dir = (ray_target - ray_origin).normalize();
+
+        // Find hit point in room
+        let max_range = 50.0; // max attack range from cat
+        if let Some(hit) = self.room.raycast(ray_origin, ray_dir, 500.0) {
+            let dist_to_cat = (hit - cat_pos).length();
+            if dist_to_cat < max_range {
+                self.target_marker = Some(hit);
+            } else {
+                // Clamp to max range along ray direction from cat
+                let dir_to_hit = (hit - cat_pos).normalize();
+                self.target_marker = Some(cat_pos + dir_to_hit * max_range);
+            }
+        } else {
+            self.target_marker = None;
+        }
+
         // Screen shake
         if self.screen_shake > 0.0 {
             let amt = self.screen_shake * 4.0;
@@ -672,6 +740,9 @@ impl ApplicationHandler for App {
                 if state.is_pressed() && self.state.is_playing() {
                     if !self.cat.scratching { self.input.scratch_pressed = true; }
                 }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_screen = (position.x as f32, position.y as f32);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll = match delta {
