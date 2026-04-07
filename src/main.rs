@@ -19,7 +19,9 @@ use crate::game::scoring::{RepairBill, OwnerType};
 use crate::game::timer::GameTimer;
 use crate::game::items;
 use crate::render::Renderer;
+use crate::core::render_mesh::GpuMesh;
 use glam::{Mat4, Quat, Vec3};
+use wgpu::util::DeviceExt;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -66,6 +68,73 @@ impl CatState {
 
 #[derive(Default)]
 struct Input { forward:bool, back:bool, left:bool, right:bool, jump:bool, scratch_pressed:bool, sprint:bool }
+
+// ─── Debris Particles ──────────────────────────────────────
+struct Particle {
+    x: f32, y: f32, z: f32,
+    vx: f32, vy: f32, vz: f32,
+    color: [u8; 3],
+    life: f32,
+}
+
+struct ParticleSystem {
+    particles: Vec<Particle>,
+}
+
+impl ParticleSystem {
+    fn new() -> Self { Self { particles: Vec::new() } }
+
+    fn spawn_debris(&mut self, hit: Vec3, debris: &[(Vec3, Voxel)], forward: Vec3) {
+        for (pos, vox) in debris.iter().take(50) { // cap at 50 particles per hit
+            let color = [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8];
+            // Random-ish velocity: outward from hit + upward + slight scatter
+            let dx = pos.x - hit.x;
+            let dz = pos.z - hit.z;
+            let scatter = ((pos.x * 7.0 + pos.z * 13.0) % 3.0) - 1.5;
+            self.particles.push(Particle {
+                x: pos.x, y: pos.y, z: pos.z,
+                vx: forward.x * 30.0 + dx * 5.0 + scatter * 10.0,
+                vy: 20.0 + ((pos.y * 11.0) % 20.0),
+                vz: forward.z * 30.0 + dz * 5.0 + scatter * 10.0,
+                color,
+                life: 1.5,
+            });
+        }
+    }
+
+    fn update(&mut self, dt: f32) {
+        for p in &mut self.particles {
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.z += p.vz * dt;
+            p.vy -= 80.0 * dt; // gravity
+            p.life -= dt;
+            // Bounce off floor
+            if p.y < 4.0 { p.y = 4.0; p.vy = p.vy.abs() * 0.3; p.vx *= 0.8; p.vz *= 0.8; }
+        }
+        self.particles.retain(|p| p.life > 0.0);
+    }
+
+    /// Rasterize particles into a small voxel grid for mesh rendering
+    fn rasterize(&self, grid: &mut [Voxel], grid_size: usize) {
+        for p in &self.particles {
+            let alpha = (p.life / 1.5).clamp(0.0, 1.0);
+            let x = p.x as usize; let y = p.y as usize; let z = p.z as usize;
+            if x < grid_size && y < grid_size && z < grid_size {
+                let r = (p.color[0] as f32 * alpha) as u8;
+                let g = (p.color[1] as f32 * alpha) as u8;
+                let b = (p.color[2] as f32 * alpha) as u8;
+                // 2x2x2 cube per particle for visibility
+                for dz in 0..2 { for dy in 0..2 { for dx in 0..2 {
+                    let px = x+dx; let py = y+dy; let pz = z+dz;
+                    if px < grid_size && py < grid_size && pz < grid_size {
+                        grid[pz * grid_size * grid_size + py * grid_size + px] = Voxel::solid(1, r, g, b);
+                    }
+                }}}
+            }
+        }
+    }
+}
 
 #[derive(PartialEq)]
 enum GameState { Playing, Paused, Over(String), Bill }
@@ -197,7 +266,7 @@ fn rasterize_cat_to_grid(cat: &CatState, time: f32) -> Vec<Voxel> {
     let mut sk = Skeleton::cat(CAT_INTERNAL_SCALE);
     // Root position: center X/Z, Y high enough for legs to fit
     sk.root_position = Vec3::new(half, half * 0.55, half);
-    sk.root_rotation = Quat::IDENTITY;
+    sk.root_rotation = Quat::from_rotation_y(cat.facing);
     animate_cat(&mut sk, cat, time);
     sk.solve_forward();
 
@@ -270,13 +339,15 @@ struct App {
     bill: RepairBill,
     state: GameState,
     cam_pitch: f32,
-    cam_yaw: f32,   // free camera rotation around cat (mouse X)
+    cam_yaw: f32,
+    cam_dist: f32,  // scroll zoom distance
     time: f32,
     frame_count: u32,
     screen_shake: f32,
     hitstop: f32,
     focused: bool,
-    room_dirty: bool, // need to rebuild room mesh
+    room_dirty: bool,
+    particles: ParticleSystem,
 }
 
 impl App {
@@ -295,9 +366,10 @@ impl App {
             meters: Meters::new(), timer: GameTimer::new(),
             bill: RepairBill::new(owner),
             state: GameState::Playing,
-            cam_pitch: 0.55, cam_yaw: 0.0, time: 0.0, frame_count: 0,
+            cam_pitch: 0.55, cam_yaw: 0.0, cam_dist: 70.0, time: 0.0, frame_count: 0,
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
+            particles: ParticleSystem::new(),
         }
     }
 
@@ -309,8 +381,8 @@ impl App {
         let cat = &mut self.cat;
         let spd = if self.input.sprint { MOVE_SPEED * 2.2 } else { MOVE_SPEED };
 
-        // AD = turn cat
-        let turn_speed = 3.0 * dt;
+        // AD = turn cat (responsive turning)
+        let turn_speed = 4.5 * dt;
         if self.input.left  { cat.facing += turn_speed; }
         if self.input.right { cat.facing -= turn_speed; }
 
@@ -323,7 +395,7 @@ impl App {
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
-        let cat_r = 5.0 * CAT_WORLD_SCALE;
+        let cat_r = 12.0; // collision radius in world units — cat body ~20 wide
         let can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
         let can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
         if can_x { cat.x = nx; }
@@ -384,9 +456,19 @@ impl App {
                 let hit_low = Vec3::new(self.cat.x, self.cat.y - LEG_HEIGHT*0.5, self.cat.z) + fwd * SCRATCH_RANGE * 0.9;
                 let d1 = self.room.scratch_at(hit, fwd, rgt);
                 let d2 = self.room.scratch_at(hit_low, fwd, rgt);
-                self.screen_shake = 0.12;
-                self.hitstop = 0.04;
-                self.room_dirty = true; // need mesh rebuild!
+
+                // VKUSNO: spawn debris particles flying outward!
+                self.particles.spawn_debris(hit, &d1, fwd);
+                self.particles.spawn_debris(hit_low, &d2, fwd);
+
+                self.screen_shake = 0.15;
+                self.hitstop = 0.05;
+                // Chunk rebuild at hit point (fast — only 64³ chunk, not full room)
+                if let Some(r) = self.renderer.as_mut() {
+                    r.rebuild_chunk_at(&self.room.data, GRID, hit.x, hit.y, hit.z);
+                    // Also rebuild adjacent chunk if near boundary
+                    r.rebuild_chunk_at(&self.room.data, GRID, hit_low.x, hit_low.y, hit_low.z);
+                }
 
                 let destroyed = d1.len() + d2.len();
                 if destroyed > 0 {
@@ -429,13 +511,58 @@ impl App {
         self.time += dt;
         self.frame_count += 1;
         if self.state.is_playing() { self.update(dt); }
+        self.particles.update(dt);
+
+        // Render particles as debris mesh (use room grid directly — particles are sparse)
+        if !self.particles.particles.is_empty() && self.frame_count % 2 == 0 {
+            // Build small mesh from particles using simple quads
+            let mut verts: Vec<f32> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+            let mut vi = 0u32;
+            for p in &self.particles.particles {
+                let alpha = (p.life / 1.5).clamp(0.2, 1.0);
+                let r = p.color[0] as f32 / 255.0 * alpha;
+                let g = p.color[1] as f32 / 255.0 * alpha;
+                let b = p.color[2] as f32 / 255.0 * alpha;
+                let s = 1.5; // particle size
+                // 6 faces of a cube
+                for &(nx,ny,nz, dx0,dy0,dz0, dx1,dy1,dz1, dx2,dy2,dz2, dx3,dy3,dz3) in &[
+                    (0.0,0.0,1.0, -s,-s,s, s,-s,s, s,s,s, -s,s,s),
+                    (0.0,0.0,-1.0, s,-s,-s, -s,-s,-s, -s,s,-s, s,s,-s),
+                    (0.0,1.0,0.0, -s,s,s, s,s,s, s,s,-s, -s,s,-s),
+                    (0.0,-1.0,0.0, -s,-s,-s, s,-s,-s, s,-s,s, -s,-s,s),
+                    (1.0,0.0,0.0, s,-s,s, s,-s,-s, s,s,-s, s,s,s),
+                    (-1.0,0.0,0.0, -s,-s,-s, -s,-s,s, -s,s,s, -s,s,-s),
+                ] {
+                    for &(dx,dy,dz) in &[(dx0,dy0,dz0),(dx1,dy1,dz1),(dx2,dy2,dz2),(dx3,dy3,dz3)] {
+                        verts.extend_from_slice(&[p.x+dx, p.y+dy, p.z+dz, nx, ny, nz, r, g, b, 1.0]);
+                    }
+                    indices.extend_from_slice(&[vi,vi+1,vi+2, vi,vi+2,vi+3]);
+                    vi += 4;
+                }
+            }
+            if let Some(renderer) = self.renderer.as_mut() {
+                let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Particles"), contents: bytemuck::cast_slice(&verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ib = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Particle Idx"), contents: bytemuck::cast_slice(&indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                renderer.debris_mesh = Some(GpuMesh { vertex_buffer: vb, index_buffer: ib, index_count: indices.len() as u32 });
+            }
+        } else if self.particles.particles.is_empty() {
+            if let Some(r) = self.renderer.as_mut() { r.debris_mesh = None; }
+        }
 
         let renderer = self.renderer.as_mut().unwrap();
 
-        // Rebuild room mesh when damaged
+        // Build room chunks (only on init)
         if self.room_dirty {
             renderer.upload_room(&self.room.data, GRID);
             self.room_dirty = false;
+            println!("  Room chunks built.");
         }
 
         // Rebuild cat mesh every 3 frames — Surface Nets + world_scale
@@ -472,7 +599,7 @@ impl App {
 
         // Camera — free orbit around cat (mouse controls camera, AD controls cat)
         let cat_pos = Vec3::new(self.cat.x, self.cat.y, self.cat.z);
-        let cam_dist = 70.0;
+        let cam_dist = self.cam_dist;
         let cam_dir = Vec3::new(
             self.cam_yaw.sin() * self.cam_pitch.cos(),
             self.cam_pitch.sin(),
@@ -511,9 +638,8 @@ impl ApplicationHandler for App {
 
         w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
         w.set_cursor_visible(false);
-
         self.renderer = Some(Renderer::new(w.clone()));
-        self.room_dirty = true; // trigger initial room mesh build
+        self.room_dirty = true;
         self.win = Some(w);
     }
 
@@ -530,7 +656,6 @@ impl ApplicationHandler for App {
         match ev {
             WindowEvent::Focused(f) => {
                 self.focused = f;
-                if !f { if let Some(w) = &self.win { w.set_cursor_grab(CursorGrabMode::None).ok(); w.set_cursor_visible(true); } }
             }
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::RedrawRequested => self.render(),
@@ -538,15 +663,16 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() { r.resize(s.width, s.height); }
             }
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
-                if state.is_pressed() {
-                    if self.focused && self.state.is_playing() {
-                        if let Some(w) = &self.win {
-                            w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
-                            w.set_cursor_visible(false);
-                        }
-                    }
+                if state.is_pressed() && self.state.is_playing() {
                     if !self.cat.scratching { self.input.scratch_pressed = true; }
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
+                };
+                self.cam_dist = (self.cam_dist - scroll * 8.0).clamp(20.0, 250.0);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let p = event.state.is_pressed();
@@ -560,27 +686,17 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyE) => { if p && !self.cat.scratching { self.input.scratch_pressed = true; } }
                     PhysicalKey::Code(KeyCode::Escape) if p => {
                         match &self.state {
-                            GameState::Playing => {
-                                self.state = GameState::Paused;
-                                if let Some(w) = &self.win { w.set_cursor_grab(CursorGrabMode::None).ok(); w.set_cursor_visible(true); }
-                            }
-                            GameState::Paused => {
-                                self.state = GameState::Playing;
-                                if let Some(w) = &self.win { w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok(); w.set_cursor_visible(false); }
-                            }
+                            GameState::Playing => { self.state = GameState::Paused; }
+                            GameState::Paused => { self.state = GameState::Playing; }
                             GameState::Over(_) => {
                                 self.state = GameState::Bill;
                                 println!("\n{}", self.bill.format_bill());
                                 println!("  Rating: {}\n", self.bill.rating());
                             }
-                            GameState::Bill => {
-                                if let Some(w) = &self.win { w.set_cursor_grab(CursorGrabMode::None).ok(); w.set_cursor_visible(true); }
-                                el.exit();
-                            }
+                            GameState::Bill => { el.exit(); }
                         }
                     }
                     PhysicalKey::Code(KeyCode::KeyQ) if p && self.state == GameState::Paused => {
-                        if let Some(w) = &self.win { w.set_cursor_grab(CursorGrabMode::None).ok(); w.set_cursor_visible(true); }
                         el.exit();
                     }
                     _ => {}

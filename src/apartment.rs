@@ -6,7 +6,7 @@
 use crate::core::svo::Voxel;
 use crate::core::procgen::Rng;
 
-pub const GRID: usize = 256;
+pub const GRID: usize = 192; // was 256 — smaller = faster room mesh rebuild on scratch
 pub const TOTAL: usize = GRID * GRID * GRID;
 pub const FLOOR_Y: usize = 2;
 
@@ -129,16 +129,17 @@ impl VoxelGrid {
     /// Scratch: 3 claw lines, returns destroyed voxels
     pub fn scratch_at(&mut self, origin: glam::Vec3, forward: glam::Vec3, right: glam::Vec3) -> Vec<(glam::Vec3, Voxel)> {
         let mut debris = Vec::new();
-        for claw in [-1.0_f32, 0.0, 1.0] {
-            let base = origin + right * (claw * 2.5);
-            let from = base + glam::Vec3::Y * 6.0 + forward * 2.0;
-            let to = base - glam::Vec3::Y * 8.0 - forward * 1.0;
+        // 3 claw swipes, wider spread, bigger radius — VKUSNO!
+        for claw in [-1.5_f32, 0.0, 1.5] {
+            let base = origin + right * (claw * 3.5);
+            let from = base + glam::Vec3::Y * 8.0 + forward * 3.0;
+            let to = base - glam::Vec3::Y * 10.0 - forward * 2.0;
             let dir = to - from;
             let len = dir.length();
             if len < 0.1 { continue; }
             let steps = (len * 2.0) as usize;
-            let r2 = 1.2_f32 * 1.2;
-            let ri = 2_i32;
+            let r2 = 2.5_f32 * 2.5; // bigger claw radius
+            let ri = 3_i32;
             for i in 0..=steps {
                 let t = i as f32 / steps as f32;
                 let p = from + dir * t;
@@ -449,14 +450,35 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
     g.fill_box(m, 0, wall_z, GRID-m, h, wall_z+w, wl);
     g.fill_box(wall_x, 0, wall_z+w, wall_x+w, h, GRID-m, wl);
 
-    // ── DOORS (random positions) ──
-    let door_w = 18_usize; let door_h = 52_usize;
-    let d1 = 35 + rng.range(0, 20) as usize;
+    // ── DOORS with frames ──
+    let door_w = 22_usize; let door_h = 56_usize;
+    let frame = Voxel::solid(1, 160, 130, 90); // wooden door frame
+
+    // Door 1: living room ↔ bedroom
+    let d1 = 40 + rng.range(0, 20) as usize;
     g.fill_box(d1, FLOOR_Y+1, wall_z, d1+door_w, door_h, wall_z+w, Voxel::empty());
-    let d2 = 155 + rng.range(0, 20) as usize;
+    g.fill_box(d1-2, FLOOR_Y+1, wall_z, d1, door_h+2, wall_z+w, frame);
+    g.fill_box(d1+door_w, FLOOR_Y+1, wall_z, d1+door_w+2, door_h+2, wall_z+w, frame);
+    g.fill_box(d1-2, door_h, wall_z, d1+door_w+2, door_h+2, wall_z+w, frame);
+
+    // Door 2: kitchen ↔ study
+    let d2 = 155 + rng.range(0, 15) as usize;
     g.fill_box(d2, FLOOR_Y+1, wall_z, d2+door_w, door_h, wall_z+w, Voxel::empty());
-    let d3 = wall_z + w + 30 + rng.range(0, 15) as usize;
+    g.fill_box(d2-2, FLOOR_Y+1, wall_z, d2, door_h+2, wall_z+w, frame);
+    g.fill_box(d2+door_w, FLOOR_Y+1, wall_z, d2+door_w+2, door_h+2, wall_z+w, frame);
+    g.fill_box(d2-2, door_h, wall_z, d2+door_w+2, door_h+2, wall_z+w, frame);
+
+    // Door 3: study ↔ bedroom
+    let d3 = wall_z + w + 35 + rng.range(0, 15) as usize;
     g.fill_box(wall_x, FLOOR_Y+1, d3, wall_x+w, door_h, d3+door_w, Voxel::empty());
+    g.fill_box(wall_x, FLOOR_Y+1, d3-2, wall_x+w, door_h+2, d3, frame);
+    g.fill_box(wall_x, FLOOR_Y+1, d3+door_w, wall_x+w, door_h+2, d3+door_w+2, frame);
+    g.fill_box(wall_x, door_h, d3-2, wall_x+w, door_h+2, d3+door_w+2, frame);
+
+    // Light switches next to doors
+    let switch_c = Voxel::solid(6, 240, 235, 225);
+    g.fill_box(d1+door_w+4, 38, wall_z-1, d1+door_w+7, 44, wall_z, switch_c);
+    g.fill_box(d2-7, 38, wall_z-1, d2-4, 44, wall_z, switch_c);
 
     // ── ROOM FLOORS ──
     g.fill_box(wall_x+w, FLOOR_Y+1, m+w, GRID-m-w, FLOOR_Y+1, wall_z-1, fl2);       // kitchen
@@ -477,8 +499,8 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
     let sofa_x = m + w + 4;
     place_sofa(&mut g, &mut rng, sofa_x, lr_cz);
 
-    // Coffee table (in front of sofa)
-    place_coffee_table(&mut g, &mut rng, sofa_x + 35, lr_cz);
+    // Coffee table (further from sofa — room to walk)
+    place_coffee_table(&mut g, &mut rng, sofa_x + 50, lr_cz);
 
     // TV (against right wall of living room, or center-right)
     let tv_x = wall_x - 16;
@@ -513,9 +535,9 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
     // Kitchen table (center)
     place_kitchen_table(&mut g, &mut rng, kx_cx, kx_cz);
 
-    // 2 chairs
-    place_chair(&mut g, &mut rng, kx_cx, kx_cz - 28);
-    place_chair(&mut g, &mut rng, kx_cx, kx_cz + 28);
+    // 2 chairs (further apart — room for cat)
+    place_chair(&mut g, &mut rng, kx_cx, kx_cz - 35);
+    place_chair(&mut g, &mut rng, kx_cx, kx_cz + 35);
 
     // Vase on table
     place_vase(&mut g, &mut rng, kx_cx as f32, 59.0, kx_cz as f32);

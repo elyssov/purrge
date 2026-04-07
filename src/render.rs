@@ -27,8 +27,10 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
 
-    // Meshes
-    pub room_mesh: Option<GpuMesh>,
+    // Meshes — room split into chunks for fast partial rebuild
+    pub room_chunks: Vec<Option<GpuMesh>>,
+    pub chunks_per_axis: usize,
+    pub chunk_size: usize,
     pub cat_mesh: Option<GpuMesh>,
     pub dog_mesh: Option<GpuMesh>,
     pub debris_mesh: Option<GpuMesh>,
@@ -85,7 +87,8 @@ impl Renderer {
         Self {
             device: dev, queue: q, surface: surf, config: cfg,
             pipeline, bgl, ubuf, bind_group, depth_view,
-            room_mesh: None, cat_mesh: None, dog_mesh: None, debris_mesh: None,
+            room_chunks: Vec::new(), chunks_per_axis: 0, chunk_size: 64,
+            cat_mesh: None, dog_mesh: None, debris_mesh: None,
         }
     }
 
@@ -98,11 +101,67 @@ impl Renderer {
         self.depth_view = dv;
     }
 
-    /// Upload room mesh (sharp meshing — architectural surfaces)
+    /// Build all room chunks (initial load)
     pub fn upload_room(&mut self, voxels: &[Voxel], grid_size: usize) {
-        let mesh = generate_mesh(voxels, grid_size, Vec3::ZERO, 1.0);
-        println!("  Room mesh: {} triangles, {} KB", mesh.triangle_count, mesh.memory_bytes() / 1024);
-        self.room_mesh = GpuMesh::from_chunk_mesh(&self.device, &mesh);
+        let cs = self.chunk_size;
+        let cpa = (grid_size + cs - 1) / cs;
+        self.chunks_per_axis = cpa;
+        let total_chunks = cpa * cpa * cpa;
+        self.room_chunks = (0..total_chunks).map(|_| None).collect();
+
+        let mut total_tris = 0;
+        for cz in 0..cpa {
+            for cy in 0..cpa {
+                for cx in 0..cpa {
+                    let idx = cz * cpa * cpa + cy * cpa + cx;
+                    let mesh = Self::mesh_chunk(voxels, grid_size, cs, cx, cy, cz);
+                    total_tris += mesh.triangle_count;
+                    self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
+                }
+            }
+        }
+        println!("  Room: {} chunks ({}³), {} total triangles", total_chunks, cs, total_tris);
+    }
+
+    /// Rebuild a single chunk (after scratch damage)
+    pub fn rebuild_chunk_at(&mut self, voxels: &[Voxel], grid_size: usize, world_x: f32, world_y: f32, world_z: f32) {
+        let cs = self.chunk_size;
+        let cpa = self.chunks_per_axis;
+        let cx = (world_x as usize / cs).min(cpa - 1);
+        let cy = (world_y as usize / cs).min(cpa - 1);
+        let cz = (world_z as usize / cs).min(cpa - 1);
+        let idx = cz * cpa * cpa + cy * cpa + cx;
+        let mesh = Self::mesh_chunk(voxels, grid_size, cs, cx, cy, cz);
+        self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
+    }
+
+    /// Extract and mesh a single chunk from the room grid
+    fn mesh_chunk(voxels: &[Voxel], grid_size: usize, chunk_size: usize, cx: usize, cy: usize, cz: usize) -> ChunkMesh {
+        let x0 = cx * chunk_size;
+        let y0 = cy * chunk_size;
+        let z0 = cz * chunk_size;
+        let cs = chunk_size.min(grid_size - x0).min(grid_size - y0).min(grid_size - z0);
+
+        // Extract chunk voxels with 1-voxel border for correct face generation
+        let padded = cs + 2;
+        let mut chunk = vec![Voxel::empty(); padded * padded * padded];
+        for lz in 0..padded {
+            for ly in 0..padded {
+                for lx in 0..padded {
+                    let gx = x0 as i32 + lx as i32 - 1;
+                    let gy = y0 as i32 + ly as i32 - 1;
+                    let gz = z0 as i32 + lz as i32 - 1;
+                    if gx >= 0 && gy >= 0 && gz >= 0
+                        && (gx as usize) < grid_size && (gy as usize) < grid_size && (gz as usize) < grid_size {
+                        chunk[lz * padded * padded + ly * padded + lx] =
+                            voxels[gz as usize * grid_size * grid_size + gy as usize * grid_size + gx as usize];
+                    }
+                }
+            }
+        }
+
+        let offset = Vec3::new(x0 as f32 - 1.0, y0 as f32 - 1.0, z0 as f32 - 1.0);
+        generate_mesh(&chunk, padded, offset, 1.0)
     }
 
     /// Upload entity mesh (smooth — organic shapes like cat/dog)
@@ -168,11 +227,13 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
 
-            // Draw room
-            if let Some(mesh) = &self.room_mesh {
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            // Draw room chunks
+            for chunk in &self.room_chunks {
+                if let Some(mesh) = chunk {
+                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                }
             }
 
             // Draw cat

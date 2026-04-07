@@ -626,23 +626,23 @@ impl BodyDefinition {
             body.add(BoneProfile::tapered(skeleton.bone(name).id, r, r * 0.7, 13, fur));
         }
 
-        // Cat face decals — on the FRONT of the head (tip, +Z direction)
+        // Cat face decals — small, proportional, on the snout end of head
         let head_id = skeleton.bone("head").id;
-        // Eyes (green, large) — at tip of head bone
-        body.add_decal(head_id, Vec3::new(-1.5*s, 1.0*s, 4.0*s), DecalShape::Sphere(1.2*s), 1, [50, 200, 50]);
-        body.add_decal(head_id, Vec3::new(1.5*s, 1.0*s, 4.0*s), DecalShape::Sphere(1.2*s), 1, [50, 200, 50]);
-        // Pupils (black, small)
-        body.add_decal(head_id, Vec3::new(-1.5*s, 1.0*s, 4.5*s), DecalShape::Sphere(0.5*s), 1, [10, 10, 10]);
-        body.add_decal(head_id, Vec3::new(1.5*s, 1.0*s, 4.5*s), DecalShape::Sphere(0.5*s), 1, [10, 10, 10]);
-        // Nose (pink)
-        body.add_decal(head_id, Vec3::new(0.0, 0.0, 4.5*s), DecalShape::Sphere(0.6*s), 1, [255, 150, 150]);
-        // Whiskers (lines from nose sideways)
-        body.add_decal(head_id, Vec3::new(-3.0*s, -0.5*s, 4.0*s), DecalShape::LineH(4.0*s), 1, [240, 240, 240]);
-        body.add_decal(head_id, Vec3::new(3.0*s, -0.5*s, 4.0*s), DecalShape::LineH(4.0*s), 1, [240, 240, 240]);
-        body.add_decal(head_id, Vec3::new(-3.0*s, 0.5*s, 4.0*s), DecalShape::LineH(3.0*s), 1, [240, 240, 240]);
-        body.add_decal(head_id, Vec3::new(3.0*s, 0.5*s, 4.0*s), DecalShape::LineH(3.0*s), 1, [240, 240, 240]);
-        // Mouth
-        body.add_decal(head_id, Vec3::new(0.0, -1.0*s, 4.0*s), DecalShape::LineH(2.0*s), 1, [180, 100, 80]);
+        // Eyes (green, small proportional to head)
+        body.add_decal(head_id, Vec3::new(-1.2*s, 0.5*s, 3.5*s), DecalShape::Sphere(0.6*s), 1, [50, 200, 50]);
+        body.add_decal(head_id, Vec3::new(1.2*s, 0.5*s, 3.5*s), DecalShape::Sphere(0.6*s), 1, [50, 200, 50]);
+        // Pupils (tiny)
+        body.add_decal(head_id, Vec3::new(-1.2*s, 0.5*s, 3.8*s), DecalShape::Point, 1, [10, 10, 10]);
+        body.add_decal(head_id, Vec3::new(1.2*s, 0.5*s, 3.8*s), DecalShape::Point, 1, [10, 10, 10]);
+        // Nose (small pink dot at tip)
+        body.add_decal(head_id, Vec3::new(0.0, -0.2*s, 4.0*s), DecalShape::Sphere(0.3*s), 1, [255, 140, 140]);
+        // Whiskers (short, thin)
+        body.add_decal(head_id, Vec3::new(-2.0*s, -0.3*s, 3.5*s), DecalShape::LineH(2.5*s), 1, [220, 220, 220]);
+        body.add_decal(head_id, Vec3::new(2.0*s, -0.3*s, 3.5*s), DecalShape::LineH(2.5*s), 1, [220, 220, 220]);
+        body.add_decal(head_id, Vec3::new(-2.0*s, 0.2*s, 3.5*s), DecalShape::LineH(2.0*s), 1, [220, 220, 220]);
+        body.add_decal(head_id, Vec3::new(2.0*s, 0.2*s, 3.5*s), DecalShape::LineH(2.0*s), 1, [220, 220, 220]);
+        // Mouth (tiny line)
+        body.add_decal(head_id, Vec3::new(0.0, -0.6*s, 3.5*s), DecalShape::LineH(1.0*s), 1, [180, 100, 80]);
 
         body
     }
