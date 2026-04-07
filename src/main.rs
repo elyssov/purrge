@@ -137,10 +137,10 @@ impl ParticleSystem {
 }
 
 #[derive(PartialEq)]
-enum GameState { Playing, Paused, Over(String), Bill }
-// Need custom PartialEq for String variant
+enum GameState { Menu, Playing, Paused, Over(String), Bill }
 impl GameState {
     fn is_playing(&self) -> bool { matches!(self, GameState::Playing) }
+    fn is_menu(&self) -> bool { matches!(self, GameState::Menu) }
 }
 
 // ─── Cat Animation ──────────────────────────────────────────
@@ -374,7 +374,7 @@ impl App {
             dog: Dog::new(148.0, 22.0),
             meters: Meters::new(), timer: GameTimer::new(),
             bill: RepairBill::new(owner),
-            state: GameState::Playing,
+            state: GameState::Menu,
             cam_pitch: 0.55, cam_yaw: 0.0, cam_dist: 70.0, time: 0.0, frame_count: 0,
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
@@ -644,6 +644,21 @@ impl App {
             renderer.dog_mesh = crate::core::render_mesh::GpuMesh::from_chunk_mesh(&renderer.device, &mesh);
         }
 
+        // ── MENU MODE: cinematic camera, title screen ──
+        if self.state.is_menu() {
+            if let Some(w) = &self.win {
+                w.set_title("PURRGE — Press SPACE to play!");
+                w.set_cursor_visible(true);
+            }
+            // Slow orbit around room center
+            let center = Vec3::new(GRID as f32 * 0.5, 40.0, GRID as f32 * 0.5);
+            let menu_angle = self.time * 0.15;
+            let eye = center + Vec3::new(menu_angle.sin() * 120.0, 100.0, menu_angle.cos() * 120.0);
+            renderer.render(eye, center, 0.0, self.time);
+            self.win.as_ref().unwrap().request_redraw();
+            return;
+        }
+
         // Camera — free orbit around cat (mouse controls camera, AD controls cat)
         let cat_pos = Vec3::new(self.cat.x, self.cat.y, self.cat.z);
         let cam_dist = self.cam_dist;
@@ -710,8 +725,7 @@ impl ApplicationHandler for App {
             .with_title("PURRGE — Build 2 Whiskers (Mesh Pipeline)")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))).unwrap());
 
-        w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
-        w.set_cursor_visible(false);
+        // Don't grab cursor in menu — grab on game start
         self.renderer = Some(Renderer::new(w.clone()));
         self.room_dirty = true;
         self.win = Some(w);
@@ -737,8 +751,16 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() { r.resize(s.width, s.height); }
             }
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
-                if state.is_pressed() && self.state.is_playing() {
-                    if !self.cat.scratching { self.input.scratch_pressed = true; }
+                if state.is_pressed() {
+                    if self.state.is_menu() {
+                        self.state = GameState::Playing;
+                        if let Some(w) = &self.win {
+                            w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
+                            w.set_cursor_visible(false);
+                        }
+                    } else if self.state.is_playing() {
+                        if !self.cat.scratching { self.input.scratch_pressed = true; }
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -758,11 +780,29 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyS) => self.input.back = p,
                     PhysicalKey::Code(KeyCode::KeyA) => self.input.left = p,
                     PhysicalKey::Code(KeyCode::KeyD) => self.input.right = p,
-                    PhysicalKey::Code(KeyCode::Space) => self.input.jump = p,
+                    PhysicalKey::Code(KeyCode::Space) => {
+                        if p && self.state.is_menu() {
+                            self.state = GameState::Playing;
+                            if let Some(w) = &self.win {
+                                w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
+                                w.set_cursor_visible(false);
+                            }
+                        } else {
+                            self.input.jump = p;
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight) => self.input.sprint = p,
                     PhysicalKey::Code(KeyCode::KeyE) => { if p && !self.cat.scratching { self.input.scratch_pressed = true; } }
+                    PhysicalKey::Code(KeyCode::Enter) if p && self.state.is_menu() => {
+                        self.state = GameState::Playing;
+                        if let Some(w) = &self.win {
+                            w.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| w.set_cursor_grab(CursorGrabMode::Locked)).ok();
+                            w.set_cursor_visible(false);
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if p => {
                         match &self.state {
+                            GameState::Menu => { el.exit(); }
                             GameState::Playing => { self.state = GameState::Paused; }
                             GameState::Paused => { self.state = GameState::Playing; }
                             GameState::Over(_) => {
