@@ -36,8 +36,8 @@ impl MeshUniforms {
             eye_pos: [eye.x, eye.y, eye.z, 1.0],
             light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
             light_color: [1.0, 0.98, 0.95, 1.0],  // warm white
-            ambient: [0.15, 0.17, 0.22, 0.4],       // blue-ish ambient, intensity 0.4
-            fog_params: [0.12, 0.13, 0.18, 0.003],  // fog color + density
+            ambient: [0.25, 0.27, 0.32, 0.55],      // brighter ambient for interior
+            fog_params: [0.15, 0.16, 0.20, 0.0002], // very light fog (rooms are 5m+)
         }
     }
 }

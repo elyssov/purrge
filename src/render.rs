@@ -267,7 +267,7 @@ impl Renderer {
                     view: &color_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.07, b: 0.12, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.45, g: 0.55, b: 0.7, a: 1.0 }), // bright sky blue
                         store: wgpu::StoreOp::Store,
                     },
                 })],

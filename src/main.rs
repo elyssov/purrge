@@ -167,11 +167,11 @@ impl ParticleSystem {
             let scatter = ((pos.x * 7.0 + pos.z * 13.0) % 3.0) - 1.5;
             self.particles.push(Particle {
                 x: pos.x, y: pos.y, z: pos.z,
-                vx: forward.x * 30.0 + dx * 5.0 + scatter * 10.0,
-                vy: 20.0 + ((pos.y * 11.0) % 20.0),
-                vz: forward.z * 30.0 + dz * 5.0 + scatter * 10.0,
+                vx: forward.x * 200.0 + dx * 30.0 + scatter * 60.0,
+                vy: 150.0 + ((pos.y * 11.0) % 100.0),
+                vz: forward.z * 200.0 + dz * 30.0 + scatter * 60.0,
                 color,
-                life: 1.5,
+                life: 2.0,
             });
         }
     }
@@ -181,7 +181,7 @@ impl ParticleSystem {
             p.x += p.vx * dt;
             p.y += p.vy * dt;
             p.z += p.vz * dt;
-            p.vy -= 80.0 * dt; // gravity
+            p.vy -= 981.0 * dt; // real gravity (cm/s²)
             p.life -= dt;
             // Bounce off floor
             if p.y < 4.0 { p.y = 4.0; p.vy = p.vy.abs() * 0.3; p.vx *= 0.8; p.vz *= 0.8; }
@@ -451,7 +451,7 @@ impl App {
             meters: Meters::new(), timer: GameTimer::new(),
             bill: RepairBill::new(owner),
             state: GameState::Menu,
-            cam_pitch: 0.55, cam_yaw: 0.0, cam_dist: 200.0, time: 0.0, frame_count: 0,
+            cam_pitch: 0.75, cam_yaw: 0.0, cam_dist: 150.0, time: 0.0, frame_count: 0,
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
             particles: ParticleSystem::new(),
@@ -604,8 +604,8 @@ impl App {
                 // Also scratch furniture objects!
                 for f in &mut self.furniture {
                     if f.shattered { continue; }
-                    f.scratch_world(hit, 4.0);
-                    f.scratch_world(hit_low, 4.0);
+                    f.scratch_world(hit, 12.0);  // 12cm radius damage
+                    f.scratch_world(hit_low, 12.0);
                 }
 
                 // VKUSNO: spawn debris particles flying outward!
@@ -780,7 +780,7 @@ impl App {
                 let r = p.color[0] as f32 / 255.0 * alpha;
                 let g = p.color[1] as f32 / 255.0 * alpha;
                 let b = p.color[2] as f32 / 255.0 * alpha;
-                let s = 1.5; // particle size
+                let s = 4.0; // particle size (4cm cubes)
                 // 6 faces of a cube
                 for &(nx,ny,nz, dx0,dy0,dz0, dx1,dy1,dz1, dx2,dy2,dz2, dx3,dy3,dz3) in &[
                     (0.0,0.0,1.0, -s,-s,s, s,-s,s, s,s,s, -s,s,s),

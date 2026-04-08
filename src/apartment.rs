@@ -181,17 +181,17 @@ impl VoxelGrid {
     /// Scratch: 3 claw lines, returns destroyed voxels
     pub fn scratch_at(&mut self, origin: glam::Vec3, forward: glam::Vec3, right: glam::Vec3) -> Vec<(glam::Vec3, Voxel)> {
         let mut debris = Vec::new();
-        // 3 claw swipes, wider spread, bigger radius — VKUSNO!
-        for claw in [-1.5_f32, 0.0, 1.5] {
-            let base = origin + right * (claw * 3.5);
-            let from = base + glam::Vec3::Y * 8.0 + forward * 3.0;
-            let to = base - glam::Vec3::Y * 10.0 - forward * 2.0;
+        // 3 claw swipes — real scale (1 voxel = 1 cm)
+        for claw in [-1.0_f32, 0.0, 1.0] {
+            let base = origin + right * (claw * 10.0); // 10cm between claw lines
+            let from = base + glam::Vec3::Y * 20.0 + forward * 8.0;
+            let to = base - glam::Vec3::Y * 25.0 - forward * 5.0;
             let dir = to - from;
             let len = dir.length();
             if len < 0.1 { continue; }
-            let steps = (len * 2.0) as usize;
-            let r2 = 2.5_f32 * 2.5; // bigger claw radius
-            let ri = 3_i32;
+            let steps = (len * 1.0) as usize; // step every cm
+            let r2 = 8.0_f32 * 8.0; // 8cm claw radius — BIG damage
+            let ri = 9_i32;
             for i in 0..=steps {
                 let t = i as f32 / steps as f32;
                 let p = from + dir * t;
