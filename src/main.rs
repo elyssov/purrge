@@ -41,13 +41,13 @@ const CAT_WORLD_SCALE: f32 = 0.35;     // mesh shrink (effective size ≈ 0.7)
 const DOG_INTERNAL_SCALE: f32 = 1.8;
 const DOG_WORLD_SCALE: f32 = 0.30;     // slightly smaller than cat
 
-const LEG_HEIGHT: f32 = 13.5;
-const MOVE_SPEED: f32 = 55.0;
-const GRAVITY: f32 = 55.0;
-const JUMP_VEL: f32 = 52.0;
+const LEG_HEIGHT: f32 = 25.0;   // cat leg height in cm
+const MOVE_SPEED: f32 = 150.0;  // 1.5 m/s walk
+const GRAVITY: f32 = 981.0;     // 9.81 m/s² in cm/s²
+const JUMP_VEL: f32 = 300.0;    // ~3 m/s jump (cats jump high)
 const SCRATCH_SPEED: f32 = 1.1;
 const MOUSE_SENS: f32 = 0.003;
-const SCRATCH_RANGE: f32 = 35.0;
+const SCRATCH_RANGE: f32 = 60.0; // 60cm reach
 const CAT_GRID: usize = 160;  // was 96 — more voxels = more detail
 const DOG_GRID: usize = 96;   // was 64
 
@@ -422,7 +422,7 @@ impl App {
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
-        let cat_r = 5.0; // small enough to fit through doors easily
+        let cat_r = 15.0; // ~15cm radius (cat body ~30cm wide, doors 90cm)
         let can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
         let can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
 
@@ -587,35 +587,34 @@ impl App {
             if self.furniture[i].pos.y <= FLOOR_Y as f32 + 2.0 { continue; }
 
             let mut supported = false;
-            let gs = self.furniture[i].grid_size;
 
-            'outer: for z in 0..gs {
-                for x in 0..gs {
-                    for y in 0..gs {
-                        if self.furniture[i].get(x, y, z).is_solid() {
-                            let wx = self.furniture[i].pos.x + x as f32;
-                            let wy = self.furniture[i].pos.y + y as f32 - 1.0;
-                            let wz = self.furniture[i].pos.z + z as f32;
+            // Find lowest Y per (x,z) column, check support below
+            // Sparse: iterate all voxels, find min Y per column
+            let mut min_y_per_col: std::collections::HashMap<(u16,u16), u16> = std::collections::HashMap::new();
+            for &(x, y, z) in self.furniture[i].voxels.keys() {
+                let entry = min_y_per_col.entry((x, z)).or_insert(y);
+                if y < *entry { *entry = y; }
+            }
 
-                            // Check room grid
-                            let rwx = wx as usize; let rwy = wy as usize; let rwz = wz as usize;
-                            if rwx < GRID && rwy < GRID && rwz < GRID && self.room.get(rwx, rwy, rwz).is_solid() {
-                                supported = true;
-                                break 'outer;
-                            }
+            'outer: for (&(x, z), &min_y) in &min_y_per_col {
+                let wx = self.furniture[i].pos.x + x as f32;
+                let wy = self.furniture[i].pos.y + min_y as f32 - 1.0;
+                let wz = self.furniture[i].pos.z + z as f32;
 
-                            // Check OTHER furniture (not self, not falling/shattered)
-                            for j in 0..furn_count {
-                                if j == i { continue; }
-                                if self.furniture[j].falling || self.furniture[j].shattered { continue; }
-                                if self.furniture[j].contains_world(wx, wy, wz) {
-                                    supported = true;
-                                    break 'outer;
-                                }
-                            }
+                // Check room grid
+                let rwx = wx as usize; let rwy = wy as usize; let rwz = wz as usize;
+                if rwx < GRID && rwy < GRID && rwz < GRID && self.room.get(rwx, rwy, rwz).is_solid() {
+                    supported = true;
+                    break 'outer;
+                }
 
-                            break; // only check lowest solid per column
-                        }
+                // Check OTHER furniture
+                for j in 0..furn_count {
+                    if j == i { continue; }
+                    if self.furniture[j].falling || self.furniture[j].shattered { continue; }
+                    if self.furniture[j].contains_world(wx, wy, wz) {
+                        supported = true;
+                        break 'outer;
                     }
                 }
             }
@@ -634,19 +633,16 @@ impl App {
             if shattered {
                 // Object shattered on impact — spawn particles
                 self.screen_shake = 0.2;
-                for z in 0..f.grid_size { for y in 0..f.grid_size { for x in 0..f.grid_size {
-                    if f.get(x, y, z).is_solid() {
-                        let v = f.get(x, y, z);
-                        self.particles.particles.push(Particle {
-                            x: f.pos.x + x as f32, y: f.pos.y + y as f32, z: f.pos.z + z as f32,
-                            vx: (x as f32 - f.grid_size as f32 * 0.5) * 8.0,
-                            vy: 15.0,
-                            vz: (z as f32 - f.grid_size as f32 * 0.5) * 8.0,
-                            color: [(v.packed >> 16) as u8, (v.packed >> 8) as u8, v.packed as u8],
-                            life: 2.0,
-                        });
-                    }
-                }}}
+                for (&(x, y, z), &v) in &f.voxels {
+                    self.particles.particles.push(Particle {
+                        x: f.pos.x + x as f32, y: f.pos.y + y as f32, z: f.pos.z + z as f32,
+                        vx: (x as f32 - f.size_x as f32 * 0.5) * 8.0,
+                        vy: 15.0,
+                        vz: (z as f32 - f.size_z as f32 * 0.5) * 8.0,
+                        color: [(v.packed >> 16) as u8, (v.packed >> 8) as u8, v.packed as u8],
+                        life: 2.0,
+                    });
+                }
                 println!("  {} SHATTERED! ${:.0} damage", f.name, f.value);
                 self.bill.record(&f.name, "shattered", f.value, 1.0);
             }

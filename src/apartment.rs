@@ -736,25 +736,26 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let lv_w = wall_x - left;
     let lv_d = wall_z - front;
 
-    // Sofa against LEFT wall, centered in depth
-    let sofa_z = front + lv_d / 2 - 16;
-    furn.push(make_sofa(&mut rng, Vec3::new((left + 5) as f32, fy, sofa_z as f32)));
+    // Sofa against LEFT wall, centered in depth (200cm wide)
+    let sofa_z = front + lv_d / 2 - 100;
+    furn.push(make_sofa(&mut rng, Vec3::new((left + 20) as f32, fy, sofa_z as f32)));
 
     // TV stand + TV against RIGHT wall OPPOSITE sofa
-    let tv_stand_x = wall_x - 20;
-    let tv_z = sofa_z + 4; // aligned with sofa center
-    furn.push(make_tv_stand(&mut rng, Vec3::new(tv_stand_x as f32, fy, tv_z as f32)));
-    furn.push(make_tv(&mut rng, Vec3::new(tv_stand_x as f32, fy + 15.0, tv_z as f32)));
+    let tv_x = wall_x - 140;
+    let tv_z = sofa_z + 50; // centered on sofa
+    furn.push(make_tv_stand(&mut rng, Vec3::new(tv_x as f32, fy, tv_z as f32)));
+    // TV ON TOP of stand (stand height = 50cm)
+    furn.push(make_tv(&mut rng, Vec3::new((tv_x + 10) as f32, fy + 50.0, (tv_z + 16) as f32)));
 
-    // Coffee table between sofa and TV
-    let table_x = left + lv_w / 2 - 16;
-    furn.push(make_table(&mut rng, Vec3::new(table_x as f32, fy, (sofa_z + 2) as f32)));
+    // Coffee table between sofa and TV (120cm wide)
+    let table_x = left + lv_w / 2 - 60;
+    furn.push(make_table(&mut rng, Vec3::new(table_x as f32, fy, (sofa_z + 10) as f32)));
 
-    // Vase on coffee table (table top at fy+30, vase starts at fy+31)
-    furn.push(make_vase(&mut rng, Vec3::new((table_x + 12) as f32, fy + 30.0, (sofa_z + 10) as f32)));
+    // Vase on coffee table (table top at fy+45)
+    furn.push(make_vase(&mut rng, Vec3::new((table_x + 50) as f32, fy + 46.0, (sofa_z + 22) as f32)));
 
-    // Floor lamp near sofa
-    furn.push(make_lamp(&mut rng, Vec3::new((left + 4) as f32, fy, (front + 5) as f32)));
+    // Floor lamp in corner (150cm tall)
+    furn.push(make_lamp(&mut rng, Vec3::new((left + 15) as f32, fy, (front + 15) as f32)));
 
     // ══════ KITCHEN (front-right) ══════
     // Bounds: wall_x+w..right, front..wall_z
@@ -763,15 +764,15 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let kx_cx = kx_left + kx_w / 2;
     let kx_cz = front + lv_d / 2;
 
-    // Kitchen table (center of room)
-    furn.push(make_table(&mut rng, Vec3::new((kx_cx - 16) as f32, fy, (kx_cz - 16) as f32)));
+    // Kitchen table (center, 120×60 cm)
+    furn.push(make_table(&mut rng, Vec3::new((kx_cx - 60) as f32, fy, (kx_cz - 30) as f32)));
 
-    // 2 chairs on opposite sides of table
-    furn.push(make_chair(&mut rng, Vec3::new((kx_cx - 26) as f32, fy, (kx_cz - 8) as f32)));
-    furn.push(make_chair(&mut rng, Vec3::new((kx_cx + 10) as f32, fy, (kx_cz - 8) as f32)));
+    // 2 chairs on opposite sides (45cm wide)
+    furn.push(make_chair(&mut rng, Vec3::new((kx_cx - 90) as f32, fy, (kx_cz) as f32)));
+    furn.push(make_chair(&mut rng, Vec3::new((kx_cx + 70) as f32, fy, (kx_cz) as f32)));
 
-    // Fridge against back wall of kitchen
-    furn.push(make_fridge(&mut rng, Vec3::new((right - 20) as f32, fy, (wall_z - 20) as f32)));
+    // Fridge in corner (60×60×180 cm)
+    furn.push(make_fridge(&mut rng, Vec3::new((right - 80) as f32, fy, (wall_z - 80) as f32)));
 
     // ══════ BEDROOM (full back, left..right, wall_z+w..back) ══════
     // This is a big room spanning the whole width
@@ -779,23 +780,23 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let br_cx = (left + right) / 2;
     let br_cz = wall_z + w + br_d / 2;
 
-    // Bookshelf (wardrobe) against left wall
-    furn.push(make_bookshelf(&mut rng, Vec3::new((left + 4) as f32, fy, (wall_z + w + 8) as f32)));
+    // Bookshelf (wardrobe) against left wall (80×180×32 cm)
+    furn.push(make_bookshelf(&mut rng, Vec3::new((left + 15) as f32, fy, (wall_z + w + 20) as f32)));
 
-    // Desk against back wall
-    furn.push(make_table(&mut rng, Vec3::new((br_cx - 16) as f32, fy, (back - 36) as f32)));
+    // Desk against back wall (120×50×60 = coffee table used as desk)
+    furn.push(make_table(&mut rng, Vec3::new((br_cx - 60) as f32, fy, (back - 80) as f32)));
 
-    // Lamp on desk (table top at fy+30)
-    furn.push(make_lamp(&mut rng, Vec3::new((br_cx - 6) as f32, fy + 30.0, (back - 30) as f32)));
+    // Lamp on desk (table top at ~fy+45)
+    furn.push(make_lamp(&mut rng, Vec3::new((br_cx - 20) as f32, fy + 46.0, (back - 60) as f32)));
 
-    // Chair at desk
-    furn.push(make_chair(&mut rng, Vec3::new((br_cx - 8) as f32, fy, (back - 52) as f32)));
+    // Chair at desk (45×90×45 cm)
+    furn.push(make_chair(&mut rng, Vec3::new((br_cx - 22) as f32, fy, (back - 150) as f32)));
 
     // Second bookshelf against right wall
-    furn.push(make_bookshelf(&mut rng, Vec3::new((right - 28) as f32, fy, (wall_z + w + 8) as f32)));
+    furn.push(make_bookshelf(&mut rng, Vec3::new((right - 100) as f32, fy, (wall_z + w + 20) as f32)));
 
-    // Vase on bookshelf (bookshelf top at local y=20, world = fy+20)
-    furn.push(make_vase(&mut rng, Vec3::new((right - 22) as f32, fy + 20.0, (wall_z + w + 12) as f32)));
+    // Vase on bookshelf (bookshelf height 180cm, top shelf at ~170)
+    furn.push(make_vase(&mut rng, Vec3::new((right - 80) as f32, fy + 172.0, (wall_z + w + 25) as f32)));
 
     // No hollow() needed — built as thin shell already
     println!("  Apartment: {} voxels in sparse grid", g.voxel_count());
