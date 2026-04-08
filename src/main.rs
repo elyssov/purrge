@@ -636,35 +636,51 @@ impl App {
         self.physics.bodies.retain(|b| b.active && b.pos.y > -50.0);
 
         // Furniture support check — objects without support START FALLING
-        // Simple: check if room grid has solid voxels under any bottom voxel of the object
-        for f in &mut self.furniture {
-            if f.falling || f.shattered { continue; }
+        // Check room grid AND other furniture for support below
+        let furn_count = self.furniture.len();
+        for i in 0..furn_count {
+            if self.furniture[i].falling || self.furniture[i].shattered { continue; }
+            // Object on floor level = always supported
+            if self.furniture[i].pos.y <= FLOOR_Y as f32 + 2.0 { continue; }
+
             let mut supported = false;
-            let gs = f.grid_size;
+            let gs = self.furniture[i].grid_size;
+
             'outer: for z in 0..gs {
                 for x in 0..gs {
                     for y in 0..gs {
-                        if f.get(x, y, z).is_solid() {
-                            // Check one voxel below in world coords
-                            let wy = (f.pos.y + y as f32 - 1.0) as usize;
-                            let wx = (f.pos.x + x as f32) as usize;
-                            let wz = (f.pos.z + z as f32) as usize;
-                            if wx < GRID && wy < GRID && wz < GRID && self.room.get(wx, wy, wz).is_solid() {
+                        if self.furniture[i].get(x, y, z).is_solid() {
+                            let wx = self.furniture[i].pos.x + x as f32;
+                            let wy = self.furniture[i].pos.y + y as f32 - 1.0;
+                            let wz = self.furniture[i].pos.z + z as f32;
+
+                            // Check room grid
+                            let rwx = wx as usize; let rwy = wy as usize; let rwz = wz as usize;
+                            if rwx < GRID && rwy < GRID && rwz < GRID && self.room.get(rwx, rwy, rwz).is_solid() {
                                 supported = true;
                                 break 'outer;
                             }
-                            break; // only check lowest in column
+
+                            // Check OTHER furniture (not self, not falling/shattered)
+                            for j in 0..furn_count {
+                                if j == i { continue; }
+                                if self.furniture[j].falling || self.furniture[j].shattered { continue; }
+                                if self.furniture[j].contains_world(wx, wy, wz) {
+                                    supported = true;
+                                    break 'outer;
+                                }
+                            }
+
+                            break; // only check lowest solid per column
                         }
                     }
                 }
             }
-            // Also check: is object resting on floor directly?
-            if f.pos.y <= FLOOR_Y as f32 + 2.0 { supported = true; }
 
             if !supported {
-                f.falling = true;
-                f.vel = Vec3::new(0.0, -5.0, 0.0);
-                println!("  {} lost support — FALLING!", f.name);
+                self.furniture[i].falling = true;
+                self.furniture[i].vel = Vec3::new(0.0, -5.0, 0.0);
+                println!("  {} lost support — FALLING!", self.furniture[i].name);
             }
         }
 
@@ -711,7 +727,7 @@ impl App {
         if self.frame_count % 30 == 0 {
             if let Some(w) = &self.win {
                 let dog_s = if self.dog.is_sleeping() { "Zzz" } else if self.dog.is_blocking() { "!!" } else { "..." };
-                w.set_title(&format!("PURRGE | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
+                w.set_title(&format!("PURRGE Build 12 Leopold | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
                     self.timer.clock_display(), self.meters.boredom, self.meters.annoyance,
                     self.meters.lives, self.bill.total(), dog_s));
             }
