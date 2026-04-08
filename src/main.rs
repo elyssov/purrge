@@ -41,7 +41,7 @@ const CAT_WORLD_SCALE: f32 = 0.35;     // mesh shrink (effective size ≈ 0.7)
 const DOG_INTERNAL_SCALE: f32 = 1.8;
 const DOG_WORLD_SCALE: f32 = 0.30;     // slightly smaller than cat
 
-const LEG_HEIGHT: f32 = 25.0;   // cat leg height in cm
+const LEG_HEIGHT: f32 = 10.5;   // cat legs: 30 voxels × 0.35 world_scale = 10.5 cm
 const MOVE_SPEED: f32 = 150.0;  // 1.5 m/s walk
 const GRAVITY: f32 = 981.0;     // 9.81 m/s² in cm/s²
 const JUMP_VEL: f32 = 300.0;    // ~3 m/s jump (cats jump high)
@@ -861,7 +861,7 @@ impl App {
                 &cat_voxels, CAT_GRID,
                 Vec3::new(
                     self.cat.x - CAT_GRID as f32 * 0.5 * ws,
-                    self.cat.y - CAT_GRID as f32 * 0.275 * ws,
+                    self.cat.y - 44.0 * ws, // pelvis at local y=44, feet touch floor
                     self.cat.z - CAT_GRID as f32 * 0.5 * ws,
                 ),
                 ws,
@@ -958,8 +958,8 @@ impl App {
         let ray_dir = (ray_target - ray_origin).normalize();
 
         // Find hit point in room
-        let max_range = 50.0; // max attack range from cat
-        if let Some(hit) = self.room.raycast(ray_origin, ray_dir, 500.0) {
+        let max_range = 80.0; // 80cm reach (realistic for cat lunge)
+        if let Some(hit) = self.room.raycast(ray_origin, ray_dir, 2000.0) {
             let dist_to_cat = (hit - cat_pos).length();
             if dist_to_cat < max_range {
                 self.target_marker = Some(hit);
