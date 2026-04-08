@@ -7,7 +7,7 @@ use glam::Vec3;
 use crate::core::svo::Voxel;
 use crate::core::procgen::Rng;
 
-pub const GRID: usize = 192; // was 256 — smaller = faster room mesh rebuild on scratch
+pub const GRID: usize = 256; // back to 256 — rooms need space for cat to roam
 pub const TOTAL: usize = GRID * GRID * GRID;
 pub const FLOOR_Y: usize = 2;
 
@@ -605,9 +605,10 @@ pub fn generate_apartment(seed: u64) -> VoxelGrid {
     g
 }
 
-/// V2: Realistic apartment — walls/floor + separate furniture with mass/physics.
-/// Seed controls: wall positions (±15%), colors, exact furniture placement.
-/// Layout is ALWAYS a realistic apartment: living room, kitchen, bedroom, study.
+/// V2: Realistic apartment — per design doc section 11.
+/// Rooms: Living room (big) + Kitchen + Bedroom. 3 rooms, clear layout.
+/// Each room has mandatory furniture per dizdoc.
+/// TV ALWAYS opposite sofa. No overlapping objects.
 pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::FurnitureObj>) {
     use crate::furniture::*;
 
@@ -615,141 +616,137 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let mut rng = Rng::new(seed);
     let mut furn = Vec::new();
 
-    // Grid = 192. Margins = 6. Usable = 180×180.
-    let m = 6_usize; // margin
-    let w = 3_usize; // wall thickness
-    let h = 120_usize; // ceiling height
-    let fy = FLOOR_Y as f32 + 1.0; // furniture floor Y
+    // GRID=256, margin=8, wall=3. Usable interior: 234×234 voxels.
+    let m = 8_usize;
+    let w = 3_usize;
+    let h = 130_usize;
+    let fy = FLOOR_Y as f32 + 1.0;
 
-    // ── WALL POSITIONS ──
-    // Horizontal wall divides front (living+kitchen) from back (bedroom+study).
-    // Place at ~55% depth for bigger front rooms.
-    let wall_z = GRID / 2 + rng.range(-8, 8) as usize; // ~96 ± 8
-    // Vertical wall divides left from right in back half.
-    let wall_x = GRID / 2 + rng.range(-10, 10) as usize; // ~96 ± 10
+    let left = m + w;         // ~11
+    let right = GRID - m - w; // ~245
+    let front = m + w;        // ~11
+    let back = GRID - m - w;  // ~245
+    let width = right - left;  // ~234
+    let depth = back - front;  // ~234
 
-    // Colors (seed-varied)
-    let fl_wood = vary(&mut rng, 175, 150, 110, 12);
-    let fl_tile = vary(&mut rng, 200, 195, 188, 8);
-    let wl = vary(&mut rng, 230, 224, 216, 6);
-    let cl = vary(&mut rng, 244, 244, 250, 4);
+    // ── LAYOUT: L-shaped living, kitchen right, bedroom back ──
+    // Horizontal wall at ~60% depth (living+kitchen front, bedroom back)
+    let wall_z = front + (depth * 6 / 10) + rng.range(-5, 5) as usize; // ~151
+    // Vertical wall at ~55% width (living left, kitchen right) — only front half
+    let wall_x = left + (width * 55 / 100) + rng.range(-5, 5) as usize; // ~140
+
+    // Colors
+    let fl_wood = vary(&mut rng, 175, 148, 108, 15);
+    let fl_tile = vary(&mut rng, 198, 193, 186, 8);
+    let wl = vary(&mut rng, 232, 226, 218, 6);
+    let cl = vary(&mut rng, 245, 245, 252, 4);
 
     // ══════ STRUCTURE ══════
-    g.fill_box(m, 0, m, GRID-m, FLOOR_Y, GRID-m, fl_wood);  // wood floor everywhere
-    g.fill_box(m, h-w, m, GRID-m, h, GRID-m, cl);            // ceiling
-
+    g.fill_box(m, 0, m, GRID-m, FLOOR_Y, GRID-m, fl_wood);
+    g.fill_box(m, h-w, m, GRID-m, h, GRID-m, cl);
     // Outer walls
-    g.fill_box(m, 0, m, m+w, h, GRID-m, wl);               // left
-    g.fill_box(GRID-m-w, 0, m, GRID-m, h, GRID-m, wl);     // right
-    g.fill_box(m, 0, m, GRID-m, h, m+w, wl);                // front
-    g.fill_box(m, 0, GRID-m-w, GRID-m, h, GRID-m, wl);     // back
+    g.fill_box(m, 0, m, m+w, h, GRID-m, wl);
+    g.fill_box(GRID-m-w, 0, m, GRID-m, h, GRID-m, wl);
+    g.fill_box(m, 0, m, GRID-m, h, m+w, wl);
+    g.fill_box(m, 0, GRID-m-w, GRID-m, h, GRID-m, wl);
 
-    // Internal walls
-    g.fill_box(m, 0, wall_z, GRID-m, h, wall_z+w, wl);                    // horizontal
-    g.fill_box(wall_x, 0, wall_z+w, wall_x+w, h, GRID-m, wl);            // vertical (back only)
+    // Horizontal wall (full width — separates front from bedroom)
+    g.fill_box(m, 0, wall_z, GRID-m, h, wall_z+w, wl);
+    // Vertical wall (front half ONLY — separates living from kitchen)
+    g.fill_box(wall_x, 0, front, wall_x+w, h, wall_z, wl);
 
-    // Kitchen tile floor (front-right)
-    g.fill_box(wall_x+w, FLOOR_Y, m+w, GRID-m-w, FLOOR_Y, wall_z-1, fl_tile);
+    // Kitchen tile floor
+    g.fill_box(wall_x+w, FLOOR_Y, front, right, FLOOR_Y, wall_z-1, fl_tile);
 
-    // ── DOORS (with frames) ──
-    let dw = 28_usize; let dh = 56_usize;
+    // ── DOORS ──
+    let dw = 30_usize; let dh = 58_usize;
     let frame = Voxel::solid(1, 155, 125, 85);
 
-    // Helper: cut door + add frame
-    let cut_door_z = |g: &mut VoxelGrid, x: usize, wz: usize| {
-        g.fill_box(x, FLOOR_Y+1, wz, x+dw, dh, wz+w, Voxel::empty());
-        g.fill_box(x-2, FLOOR_Y+1, wz, x, dh+2, wz+w, frame);
-        g.fill_box(x+dw, FLOOR_Y+1, wz, x+dw+2, dh+2, wz+w, frame);
-        g.fill_box(x-2, dh, wz, x+dw+2, dh+2, wz+w, frame);
-    };
-    let cut_door_x = |g: &mut VoxelGrid, wx: usize, z: usize| {
-        g.fill_box(wx, FLOOR_Y+1, z, wx+w, dh, z+dw, Voxel::empty());
-        g.fill_box(wx, FLOOR_Y+1, z-2, wx+w, dh+2, z, frame);
-        g.fill_box(wx, FLOOR_Y+1, z+dw, wx+w, dh+2, z+dw+2, frame);
-        g.fill_box(wx, dh, z-2, wx+w, dh+2, z+dw+2, frame);
-    };
+    // Living → Kitchen (vertical wall, front half)
+    let d1z = front + 30 + rng.range(0, 20) as usize;
+    g.fill_box(wall_x, FLOOR_Y+1, d1z, wall_x+w, dh, d1z+dw, Voxel::empty());
+    g.fill_box(wall_x, FLOOR_Y+1, d1z-2, wall_x+w, dh+2, d1z, frame);
+    g.fill_box(wall_x, FLOOR_Y+1, d1z+dw, wall_x+w, dh+2, d1z+dw+2, frame);
 
-    // Door: living room ↔ bedroom (left side of horizontal wall)
-    let d1 = m + w + 20 + rng.range(0, 15) as usize;
-    cut_door_z(&mut g, d1, wall_z);
+    // Living → Bedroom (horizontal wall, left half)
+    let d2x = left + 30 + rng.range(0, 30) as usize;
+    g.fill_box(d2x, FLOOR_Y+1, wall_z, d2x+dw, dh, wall_z+w, Voxel::empty());
+    g.fill_box(d2x-2, FLOOR_Y+1, wall_z, d2x, dh+2, wall_z+w, frame);
+    g.fill_box(d2x+dw, FLOOR_Y+1, wall_z, d2x+dw+2, dh+2, wall_z+w, frame);
 
-    // Door: kitchen ↔ study (right side of horizontal wall)
-    let d2 = wall_x + w + 15 + rng.range(0, 15) as usize;
-    if d2 + dw < GRID - m - w { cut_door_z(&mut g, d2, wall_z); }
+    // Kitchen → Bedroom (horizontal wall, right half)
+    let d3x = wall_x + w + 20 + rng.range(0, 20) as usize;
+    if d3x + dw < right {
+        g.fill_box(d3x, FLOOR_Y+1, wall_z, d3x+dw, dh, wall_z+w, Voxel::empty());
+        g.fill_box(d3x-2, FLOOR_Y+1, wall_z, d3x, dh+2, wall_z+w, frame);
+        g.fill_box(d3x+dw, FLOOR_Y+1, wall_z, d3x+dw+2, dh+2, wall_z+w, frame);
+    }
 
-    // Door: bedroom ↔ study (vertical wall)
-    let d3 = wall_z + w + 20 + rng.range(0, 15) as usize;
-    if d3 + dw < GRID - m - w { cut_door_x(&mut g, wall_x, d3); }
+    // ══════ LIVING ROOM (front-left, BIGGEST room) ══════
+    // Bounds: left..wall_x, front..wall_z (~129 × ~140 voxels)
+    let lv_w = wall_x - left;
+    let lv_d = wall_z - front;
 
-    // ══════ ROOMS ══════
-    // Room boundaries (interior, excluding walls)
-    let left = m + w;
-    let right = GRID - m - w;
-    let front = m + w;
-    let back = GRID - m - w;
+    // Sofa against LEFT wall, centered in depth
+    let sofa_z = front + lv_d / 2 - 16;
+    furn.push(make_sofa(&mut rng, Vec3::new((left + 5) as f32, fy, sofa_z as f32)));
 
-    // ── LIVING ROOM (front-left) ──
-    // Bounds: left..wall_x, front..wall_z
-    let lv_cx = (left + wall_x) / 2;
-    let lv_cz = (front + wall_z) / 2;
+    // TV stand + TV against RIGHT wall OPPOSITE sofa
+    let tv_stand_x = wall_x - 20;
+    let tv_z = sofa_z + 4; // aligned with sofa center
+    furn.push(make_tv_stand(&mut rng, Vec3::new(tv_stand_x as f32, fy, tv_z as f32)));
+    furn.push(make_tv(&mut rng, Vec3::new(tv_stand_x as f32, fy + 15.0, tv_z as f32)));
 
-    // Sofa against left wall
-    furn.push(make_sofa(&mut rng, Vec3::new((left + 4) as f32, fy, (lv_cz - 16) as f32)));
-    // Coffee table in front of sofa
-    furn.push(make_table(&mut rng, Vec3::new((left + 40) as f32, fy, (lv_cz - 16) as f32)));
-    // Vase on coffee table
-    furn.push(make_vase(&mut rng, Vec3::new((left + 48) as f32, fy + 30.0, (lv_cz - 8) as f32)));
-    // TV stand + TV against right side
-    let tv_x = wall_x - 20;
-    furn.push(make_tv_stand(&mut rng, Vec3::new(tv_x as f32, fy, (lv_cz - 4) as f32)));
-    furn.push(make_tv(&mut rng, Vec3::new(tv_x as f32, fy + 15.0, (lv_cz - 4) as f32)));
-    // Floor lamp in corner
-    furn.push(make_lamp(&mut rng, Vec3::new((left + 3) as f32, fy, (front + 3) as f32)));
+    // Coffee table between sofa and TV
+    let table_x = left + lv_w / 2 - 16;
+    furn.push(make_table(&mut rng, Vec3::new(table_x as f32, fy, (sofa_z + 2) as f32)));
 
-    // ── KITCHEN (front-right) ──
+    // Vase on coffee table (table top at fy+30, vase starts at fy+31)
+    furn.push(make_vase(&mut rng, Vec3::new((table_x + 12) as f32, fy + 30.0, (sofa_z + 10) as f32)));
+
+    // Floor lamp near sofa
+    furn.push(make_lamp(&mut rng, Vec3::new((left + 4) as f32, fy, (front + 5) as f32)));
+
+    // ══════ KITCHEN (front-right) ══════
     // Bounds: wall_x+w..right, front..wall_z
-    let kx_cx = (wall_x + w + right) / 2;
-    let kx_cz = (front + wall_z) / 2;
+    let kx_left = wall_x + w;
+    let kx_w = right - kx_left;
+    let kx_cx = kx_left + kx_w / 2;
+    let kx_cz = front + lv_d / 2;
 
-    // Kitchen table (center)
+    // Kitchen table (center of room)
     furn.push(make_table(&mut rng, Vec3::new((kx_cx - 16) as f32, fy, (kx_cz - 16) as f32)));
-    // Chairs around table
-    furn.push(make_chair(&mut rng, Vec3::new((kx_cx - 24) as f32, fy, (kx_cz - 8) as f32)));
-    furn.push(make_chair(&mut rng, Vec3::new((kx_cx + 8) as f32, fy, (kx_cz - 8) as f32)));
-    // Vase on kitchen table
-    furn.push(make_vase(&mut rng, Vec3::new((kx_cx - 8) as f32, fy + 30.0, (kx_cz - 8) as f32)));
-    // Fridge in corner
-    furn.push(make_fridge(&mut rng, Vec3::new((right - 18) as f32, fy, (front + 3) as f32)));
 
-    // ── BEDROOM (back-left) ──
-    // Bounds: left..wall_x, wall_z+w..back
-    let br_cx = (left + wall_x) / 2;
-    let br_cz = (wall_z + w + back) / 2;
+    // 2 chairs on opposite sides of table
+    furn.push(make_chair(&mut rng, Vec3::new((kx_cx - 26) as f32, fy, (kx_cz - 8) as f32)));
+    furn.push(make_chair(&mut rng, Vec3::new((kx_cx + 10) as f32, fy, (kx_cz - 8) as f32)));
 
-    // Bookshelf against left wall (as wardrobe stand-in)
-    furn.push(make_bookshelf(&mut rng, Vec3::new((left + 3) as f32, fy, (wall_z + w + 5) as f32)));
-    // Another bookshelf
-    furn.push(make_bookshelf(&mut rng, Vec3::new((left + 3) as f32, fy, (wall_z + w + 30) as f32)));
-    // Lamp as nightstand lamp
-    furn.push(make_lamp(&mut rng, Vec3::new((left + 30) as f32, fy, (back - 14) as f32)));
-    // Chair
-    furn.push(make_chair(&mut rng, Vec3::new((br_cx) as f32, fy, (br_cz) as f32)));
+    // Fridge against back wall of kitchen
+    furn.push(make_fridge(&mut rng, Vec3::new((right - 20) as f32, fy, (wall_z - 20) as f32)));
 
-    // ── STUDY (back-right) ──
-    // Bounds: wall_x+w..right, wall_z+w..back
-    let st_cx = (wall_x + w + right) / 2;
-    let st_cz = (wall_z + w + back) / 2;
+    // ══════ BEDROOM (full back, left..right, wall_z+w..back) ══════
+    // This is a big room spanning the whole width
+    let br_d = back - (wall_z + w);
+    let br_cx = (left + right) / 2;
+    let br_cz = wall_z + w + br_d / 2;
 
-    // Desk (table against back wall)
-    furn.push(make_table(&mut rng, Vec3::new((st_cx - 16) as f32, fy, (back - 36) as f32)));
-    // Lamp on desk
-    furn.push(make_lamp(&mut rng, Vec3::new((st_cx - 8) as f32, fy + 30.0, (back - 30) as f32)));
+    // Bookshelf (wardrobe) against left wall
+    furn.push(make_bookshelf(&mut rng, Vec3::new((left + 4) as f32, fy, (wall_z + w + 8) as f32)));
+
+    // Desk against back wall
+    furn.push(make_table(&mut rng, Vec3::new((br_cx - 16) as f32, fy, (back - 36) as f32)));
+
+    // Lamp on desk (table top at fy+30)
+    furn.push(make_lamp(&mut rng, Vec3::new((br_cx - 6) as f32, fy + 30.0, (back - 30) as f32)));
+
     // Chair at desk
-    furn.push(make_chair(&mut rng, Vec3::new((st_cx - 8) as f32, fy, (back - 50) as f32)));
-    // Bookshelf
-    furn.push(make_bookshelf(&mut rng, Vec3::new((wall_x + w + 3) as f32, fy, (wall_z + w + 5) as f32)));
-    // Vase on bookshelf
-    furn.push(make_vase(&mut rng, Vec3::new((wall_x + w + 10) as f32, fy + 22.0, (wall_z + w + 8) as f32)));
+    furn.push(make_chair(&mut rng, Vec3::new((br_cx - 8) as f32, fy, (back - 52) as f32)));
+
+    // Second bookshelf against right wall
+    furn.push(make_bookshelf(&mut rng, Vec3::new((right - 28) as f32, fy, (wall_z + w + 8) as f32)));
+
+    // Vase on bookshelf (bookshelf top at local y=20, world = fy+20)
+    furn.push(make_vase(&mut rng, Vec3::new((right - 22) as f32, fy + 20.0, (wall_z + w + 12) as f32)));
 
     g.hollow();
     (g, furn)
