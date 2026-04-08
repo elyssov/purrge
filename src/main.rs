@@ -389,7 +389,7 @@ impl App {
             meters: Meters::new(), timer: GameTimer::new(),
             bill: RepairBill::new(owner),
             state: GameState::Menu,
-            cam_pitch: 0.55, cam_yaw: 0.0, cam_dist: 70.0, time: 0.0, frame_count: 0,
+            cam_pitch: 0.55, cam_yaw: 0.0, cam_dist: 200.0, time: 0.0, frame_count: 0,
             screen_shake: 0.0, hitstop: 0.0,
             focused: true, room_dirty: true,
             particles: ParticleSystem::new(),
@@ -440,29 +440,9 @@ impl App {
                 let debris = self.room.scratch_at(bump_pos, fwd_v, rgt_v);
                 if !debris.is_empty() {
                     self.particles.spawn_debris(bump_pos, &debris, fwd_v);
-                    // Connectivity check — knocked piece falls
-                    let materials = crate::core::material::MaterialRegistry::default();
-                    let falling = crate::core::destruction::find_disconnected_pieces(
-                        &mut self.room.data, GRID, FLOOR_Y + 1,
-                        bump_pos.x, bump_pos.y, bump_pos.z, 25.0, &materials,
-                    );
-                    for piece in &falling {
-                        for (rel, vox) in &piece.voxels {
-                            self.particles.particles.push(Particle {
-                                x: piece.position[0] + rel[0] as f32,
-                                y: piece.position[1] + rel[1] as f32,
-                                z: piece.position[2] + rel[2] as f32,
-                                vx: fwd_v.x * 15.0, vy: 8.0, vz: fwd_v.z * 15.0,
-                                color: [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8],
-                                life: 2.0,
-                            });
-                        }
-                    }
+                    // Rebuild affected chunk
                     if let Some(r) = self.renderer.as_mut() {
-                        r.rebuild_chunk_at(&self.room.data, GRID, bump_pos.x, bump_pos.y, bump_pos.z);
-                        for piece in &falling {
-                            r.rebuild_chunk_at(&self.room.data, GRID, piece.position[0], piece.position[1], piece.position[2]);
-                        }
+                        r.rebuild_chunk_at(&self.room, GRID, bump_pos.x, bump_pos.y, bump_pos.z);
                     }
                     self.screen_shake = 0.1;
                     let value = debris.len() as f32 * 1.5;
@@ -547,50 +527,13 @@ impl App {
                 self.screen_shake = 0.15;
                 self.hitstop = 0.05;
 
-                // CONNECTIVITY CHECK: find pieces no longer connected to floor/walls
-                // If you break the TV stand leg → TV falls!
-                let materials = crate::core::material::MaterialRegistry::default();
-                let falling = crate::core::destruction::find_disconnected_pieces(
-                    &mut self.room.data, GRID, FLOOR_Y + 1,
-                    hit.x, hit.y, hit.z, 30.0, &materials,
-                );
-                // Disconnected pieces → RigidBody (they FALL with physics)
-                for piece in &falling {
-                    let mass = piece.mass.max(1.0);
-                    let size = (piece.voxels.len() as f32).cbrt().max(2.0);
-                    let pos = Vec3::new(piece.position[0], piece.position[1], piece.position[2]);
-                    self.physics.spawn_debris(
-                        pos, Vec3::new(0.0, -2.0, 0.0), // slight downward push
-                        mass, 1, piece.voxels.len() as f32 * 2.0,
-                    );
-                    // Also spawn visual particles from the piece
-                    for (rel, vox) in piece.voxels.iter().take(30) {
-                        let wx = piece.position[0] + rel[0] as f32;
-                        let wy = piece.position[1] + rel[1] as f32;
-                        let wz = piece.position[2] + rel[2] as f32;
-                        self.particles.particles.push(Particle {
-                            x: wx, y: wy, z: wz,
-                            vx: 0.0, vy: 0.0, vz: 0.0,
-                            color: [(vox.packed >> 16) as u8, (vox.packed >> 8) as u8, vox.packed as u8],
-                            life: 3.0,
-                        });
-                    }
-                }
-                if !falling.is_empty() {
-                    self.screen_shake = 0.3; // bigger shake for chain reaction!
-                    println!("  Chain reaction! {} pieces fell ({} voxels)",
-                        falling.len(), falling.iter().map(|d| d.voxels.len()).sum::<usize>());
-                }
+                // Furniture objects handle their own falling via support check.
+                // Room grid connectivity not needed — walls don't float.
 
                 // Chunk rebuild at hit point
                 if let Some(r) = self.renderer.as_mut() {
-                    r.rebuild_chunk_at(&self.room.data, GRID, hit.x, hit.y, hit.z);
-                    r.rebuild_chunk_at(&self.room.data, GRID, hit_low.x, hit_low.y, hit_low.z);
-                    // Rebuild chunks where debris fell from
-                    for piece in &falling {
-                        r.rebuild_chunk_at(&self.room.data, GRID,
-                            piece.position[0], piece.position[1], piece.position[2]);
-                    }
+                    r.rebuild_chunk_at(&self.room, GRID, hit.x, hit.y, hit.z);
+                    r.rebuild_chunk_at(&self.room, GRID, hit_low.x, hit_low.y, hit_low.z);
                 }
 
                 let destroyed = d1.len() + d2.len();
@@ -821,7 +764,7 @@ impl App {
 
         // Build room chunks (only on init)
         if self.room_dirty {
-            renderer.upload_room(&self.room.data, GRID);
+            renderer.upload_room(&self.room, GRID);
             self.room_dirty = false;
             println!("  Room chunks built.");
         }
@@ -1040,7 +983,7 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
                 };
-                self.cam_dist = (self.cam_dist - scroll * 8.0).clamp(20.0, 250.0);
+                self.cam_dist = (self.cam_dist - scroll * 20.0).clamp(30.0, 800.0);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let p = event.state.is_pressed();

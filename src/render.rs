@@ -76,7 +76,7 @@ impl Renderer {
             label: Some("Uniforms"),
             contents: bytemuck::bytes_of(&MeshUniforms::new(
                 Mat4::IDENTITY,
-                Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 16.0/9.0, 0.1, 800.0),
+                Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 16.0/9.0, 1.0, 3000.0),
                 Vec3::ZERO,
                 Vec3::new(0.3, -0.8, 0.5).normalize(),
             )),
@@ -126,7 +126,7 @@ impl Renderer {
         Self {
             device: dev, queue: q, surface: surf, config: cfg,
             pipeline, bgl, ubuf, bind_group, depth_view,
-            room_chunks: Vec::new(), chunks_per_axis: 0, chunk_size: 64,
+            room_chunks: Vec::new(), chunks_per_axis: 0, chunk_size: 128,
             cat_mesh: None, dog_mesh: None, debris_mesh: None,
             furniture_meshes: Vec::new(),
             hud_pipeline, hud_verts: None, hud_vert_count: 0,
@@ -142,67 +142,84 @@ impl Renderer {
         self.depth_view = dv;
     }
 
-    /// Build all room chunks (initial load)
-    pub fn upload_room(&mut self, voxels: &[Voxel], grid_size: usize) {
+    /// Build all room chunks from sparse grid
+    pub fn upload_room(&mut self, room: &crate::apartment::VoxelGrid, grid_size: usize) {
         let cs = self.chunk_size;
         let cpa = (grid_size + cs - 1) / cs;
         self.chunks_per_axis = cpa;
         let total_chunks = cpa * cpa * cpa;
         self.room_chunks = (0..total_chunks).map(|_| None).collect();
 
-        let mut total_tris = 0;
-        for cz in 0..cpa {
-            for cy in 0..cpa {
-                for cx in 0..cpa {
-                    let idx = cz * cpa * cpa + cy * cpa + cx;
-                    let mesh = Self::mesh_chunk(voxels, grid_size, cs, cx, cy, cz);
-                    total_tris += mesh.triangle_count;
-                    self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
-                }
+        // Pre-compute occupied chunks (one pass over voxels)
+        let mut occupied = vec![false; total_chunks];
+        for &(vx, vy, vz) in room.data.keys() {
+            let cx = vx as usize / cs;
+            let cy = vy as usize / cs;
+            let cz = vz as usize / cs;
+            if cx < cpa && cy < cpa && cz < cpa {
+                occupied[cz * cpa * cpa + cy * cpa + cx] = true;
             }
         }
-        println!("  Room: {} chunks ({}³), {} total triangles", total_chunks, cs, total_tris);
+
+        // Build occupied chunks ONE AT A TIME (minimal memory)
+        let padded = cs + 2;
+        let mut total_tris = 0;
+        let mut built_chunks = 0;
+        for idx in 0..total_chunks {
+            if !occupied[idx] { continue; }
+            let cz = idx / (cpa * cpa);
+            let cy = (idx / cpa) % cpa;
+            let cx = idx % cpa;
+            let x0 = cx * cs; let y0 = cy * cs; let z0 = cz * cs;
+
+            // Build flat array for this chunk only (iterate voxels in range)
+            let mut flat = vec![Voxel::empty(); padded * padded * padded];
+            for (&(vx, vy, vz), &v) in &room.data {
+                let gx = vx as i32; let gy = vy as i32; let gz = vz as i32;
+                let lx = gx - x0 as i32 + 1;
+                let ly = gy - y0 as i32 + 1;
+                let lz = gz - z0 as i32 + 1;
+                if lx >= 0 && ly >= 0 && lz >= 0
+                    && (lx as usize) < padded && (ly as usize) < padded && (lz as usize) < padded {
+                    flat[lz as usize * padded * padded + ly as usize * padded + lx as usize] = v;
+                }
+            }
+
+            let offset = Vec3::new(x0 as f32 - 1.0, y0 as f32 - 1.0, z0 as f32 - 1.0);
+            let mesh = generate_mesh(&flat, padded, offset, 1.0);
+            total_tris += mesh.triangle_count;
+            self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
+            built_chunks += 1;
+        }
+        println!("  Room: {}/{} chunks ({}³), {} tris, {} voxels",
+            built_chunks, total_chunks, cs, total_tris, room.voxel_count());
     }
 
     /// Rebuild a single chunk (after scratch damage)
-    pub fn rebuild_chunk_at(&mut self, voxels: &[Voxel], grid_size: usize, world_x: f32, world_y: f32, world_z: f32) {
+    pub fn rebuild_chunk_at(&mut self, room: &crate::apartment::VoxelGrid, grid_size: usize, world_x: f32, world_y: f32, world_z: f32) {
         let cs = self.chunk_size;
         let cpa = self.chunks_per_axis;
+        if cpa == 0 { return; }
         let cx = (world_x as usize / cs).min(cpa - 1);
         let cy = (world_y as usize / cs).min(cpa - 1);
         let cz = (world_z as usize / cs).min(cpa - 1);
-        let idx = cz * cpa * cpa + cy * cpa + cx;
-        let mesh = Self::mesh_chunk(voxels, grid_size, cs, cx, cy, cz);
-        self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
-    }
-
-    /// Extract and mesh a single chunk from the room grid
-    fn mesh_chunk(voxels: &[Voxel], grid_size: usize, chunk_size: usize, cx: usize, cy: usize, cz: usize) -> ChunkMesh {
-        let x0 = cx * chunk_size;
-        let y0 = cy * chunk_size;
-        let z0 = cz * chunk_size;
-        let cs = chunk_size.min(grid_size - x0).min(grid_size - y0).min(grid_size - z0);
-
-        // Extract chunk voxels with 1-voxel border for correct face generation
+        // Export single chunk via per-voxel iteration (ok for rebuild — small area)
         let padded = cs + 2;
-        let mut chunk = vec![Voxel::empty(); padded * padded * padded];
-        for lz in 0..padded {
-            for ly in 0..padded {
-                for lx in 0..padded {
-                    let gx = x0 as i32 + lx as i32 - 1;
-                    let gy = y0 as i32 + ly as i32 - 1;
-                    let gz = z0 as i32 + lz as i32 - 1;
-                    if gx >= 0 && gy >= 0 && gz >= 0
-                        && (gx as usize) < grid_size && (gy as usize) < grid_size && (gz as usize) < grid_size {
-                        chunk[lz * padded * padded + ly * padded + lx] =
-                            voxels[gz as usize * grid_size * grid_size + gy as usize * grid_size + gx as usize];
-                    }
+        let mut flat = vec![Voxel::empty(); padded * padded * padded];
+        let x0 = cx * cs; let y0 = cy * cs; let z0 = cz * cs;
+        for (&(vx, vy, vz), &v) in &room.data {
+            let (gx, gy, gz) = (vx as usize, vy as usize, vz as usize);
+            if gx + 1 >= x0 && gx < x0 + padded && gy + 1 >= y0 && gy < y0 + padded && gz + 1 >= z0 && gz < z0 + padded {
+                let lx = gx + 1 - x0; let ly = gy + 1 - y0; let lz = gz + 1 - z0;
+                if lx < padded && ly < padded && lz < padded {
+                    flat[lz * padded * padded + ly * padded + lx] = v;
                 }
             }
         }
-
         let offset = Vec3::new(x0 as f32 - 1.0, y0 as f32 - 1.0, z0 as f32 - 1.0);
-        generate_mesh(&chunk, padded, offset, 1.0)
+        let mesh = generate_mesh(&flat, padded, offset, 1.0);
+        let idx = cz * cpa * cpa + cy * cpa + cx;
+        self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
     }
 
     /// Upload entity mesh (smooth — organic shapes like cat/dog)
@@ -230,7 +247,7 @@ impl Renderer {
     pub fn render(&mut self, eye: Vec3, target: Vec3, screen_shake: f32, time: f32) {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let view = Mat4::look_at_rh(eye, target, Vec3::Y);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 800.0);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 3000.0);
         let light_dir = Vec3::new(0.3, -0.8, 0.5).normalize();
 
         let uniforms = MeshUniforms::new(view, proj, eye, light_dir);

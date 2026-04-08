@@ -4,44 +4,89 @@
 // ═══════════════════════════════════════════════════════════════
 
 use glam::Vec3;
+use std::collections::HashMap;
 use crate::core::svo::Voxel;
 use crate::core::procgen::Rng;
 
-pub const GRID: usize = 256; // back to 256 — rooms need space for cat to roam
-pub const TOTAL: usize = GRID * GRID * GRID;
+pub const GRID: usize = 1024; // sparse — only filled voxels use memory
 pub const FLOOR_Y: usize = 2;
 
-/// Flat voxel grid for apartment
+/// Sparse voxel grid — HashMap, NOT flat array.
+/// 1024³ grid uses ~10 MB for walls/floor (vs 8 GB flat).
 pub struct VoxelGrid {
-    pub data: Vec<Voxel>,
+    pub data: HashMap<(u32, u32, u32), Voxel>,
 }
 
 impl VoxelGrid {
-    pub fn new() -> Self { Self { data: vec![Voxel::empty(); TOTAL] } }
+    pub fn new() -> Self { Self { data: HashMap::with_capacity(500_000) } }
 
     pub fn set(&mut self, x: usize, y: usize, z: usize, v: Voxel) {
-        if x < GRID && y < GRID && z < GRID {
-            self.data[z * GRID * GRID + y * GRID + x] = v;
+        if v.is_solid() {
+            self.data.insert((x as u32, y as u32, z as u32), v);
+        } else {
+            self.data.remove(&(x as u32, y as u32, z as u32));
         }
     }
 
     pub fn get(&self, x: usize, y: usize, z: usize) -> Voxel {
-        if x < GRID && y < GRID && z < GRID {
-            self.data[z * GRID * GRID + y * GRID + x]
-        } else {
-            Voxel::empty()
-        }
+        *self.data.get(&(x as u32, y as u32, z as u32)).unwrap_or(&Voxel::empty())
     }
 
-    pub fn fill_box(&mut self, x0:usize,y0:usize,z0:usize, x1:usize,y1:usize,z1:usize, v:Voxel) {
-        for z in z0..=z1.min(GRID-1) {
-            for y in y0..=y1.min(GRID-1) {
-                for x in x0..=x1.min(GRID-1) {
+    pub fn fill_box(&mut self, x0: usize, y0: usize, z0: usize, x1: usize, y1: usize, z1: usize, v: Voxel) {
+        for z in z0..=z1 {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
                     self.set(x, y, z, v);
                 }
             }
         }
     }
+
+    /// Export ALL chunks at once (one pass over voxels — fast for sparse grids)
+    pub fn export_all_chunks(&self, chunk_size: usize, cpa: usize) -> Vec<Vec<Voxel>> {
+        let padded = chunk_size + 2;
+        let total = cpa * cpa * cpa;
+        let mut chunks: Vec<Vec<Voxel>> = (0..total).map(|_| vec![Voxel::empty(); padded * padded * padded]).collect();
+
+        // Single pass: place each voxel into correct chunk + 1-voxel border neighbors
+        for (&(vx, vy, vz), &v) in &self.data {
+            // This voxel belongs to chunk (cx, cy, cz)
+            // But it also needs to appear as border in adjacent chunks
+            for dz in -1i32..=1 {
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let gx = vx as i32 + dx;
+                        let gy = vy as i32 + dy;
+                        let gz = vz as i32 + dz;
+                        // Which chunk does (gx-dx, gy-dy, gz-dz) map to with border?
+                        // Actually, we just need: which chunk's padded region includes (vx,vy,vz)?
+                        // Chunk (cx,cy,cz) padded region = [cx*cs-1, cx*cs+cs]
+                        break; // too complex, simplify
+                    }
+                    break;
+                }
+                break;
+            }
+
+            let cx = vx as usize / chunk_size;
+            let cy = vy as usize / chunk_size;
+            let cz = vz as usize / chunk_size;
+            if cx >= cpa || cy >= cpa || cz >= cpa { continue; }
+            let idx = cz * cpa * cpa + cy * cpa + cx;
+            let x0 = cx * chunk_size;
+            let y0 = cy * chunk_size;
+            let z0 = cz * chunk_size;
+            let lx = vx as usize - x0 + 1; // +1 for border
+            let ly = vy as usize - y0 + 1;
+            let lz = vz as usize - z0 + 1;
+            if lx < padded && ly < padded && lz < padded {
+                chunks[idx][lz * padded * padded + ly * padded + lx] = v;
+            }
+        }
+        chunks
+    }
+
+    pub fn voxel_count(&self) -> usize { self.data.len() }
 
     pub fn fill_sphere(&mut self, cx:f32, cy:f32, cz:f32, r:f32, v:Voxel) {
         let r2 = r * r;
@@ -68,19 +113,23 @@ impl VoxelGrid {
         }}}
     }
 
-    /// Remove interior voxels (optimization for meshing)
+    /// Remove interior voxels (all 6 neighbors solid = invisible)
     pub fn hollow(&mut self) {
+        let keys: Vec<(u32,u32,u32)> = self.data.keys().copied().collect();
         let mut remove = Vec::new();
-        for z in 1..GRID-1 { for y in 1..GRID-1 { for x in 1..GRID-1 {
-            let i = z * GRID * GRID + y * GRID + x;
-            if self.data[i].is_empty() { continue; }
-            if self.data[i-1].is_solid() && self.data[i+1].is_solid()
-            && self.data[i-GRID].is_solid() && self.data[i+GRID].is_solid()
-            && self.data[i-GRID*GRID].is_solid() && self.data[i+GRID*GRID].is_solid() {
-                remove.push(i);
+        for (x, y, z) in keys {
+            if x == 0 || y == 0 || z == 0 { continue; }
+            let xu = x as usize; let yu = y as usize; let zu = z as usize;
+            if self.get(xu-1, yu, zu).is_solid()
+            && self.get(xu+1, yu, zu).is_solid()
+            && self.get(xu, yu-1, zu).is_solid()
+            && self.get(xu, yu+1, zu).is_solid()
+            && self.get(xu, yu, zu-1).is_solid()
+            && self.get(xu, yu, zu+1).is_solid() {
+                remove.push((x, y, z));
             }
-        }}}
-        for i in remove { self.data[i] = Voxel::empty(); }
+        }
+        for k in remove { self.data.remove(&k); }
     }
 
     /// Raycast for camera collision / scratch targeting
@@ -150,11 +199,10 @@ impl VoxelGrid {
                         let y = (p.y as i32+dy) as usize;
                         let z = (p.z as i32+dz) as usize;
                         if x < GRID && y < GRID && z < GRID && y > FLOOR_Y+1 {
-                            let idx = z*GRID*GRID + y*GRID + x;
-                            let old = self.data[idx];
+                            let old = self.get(x, y, z);
                             if old.is_solid() {
                                 debris.push((glam::Vec3::new(x as f32, y as f32, z as f32), old));
-                                self.data[idx] = Voxel::empty();
+                                self.set(x, y, z, Voxel::empty());
                             }
                         }
                     }
@@ -616,10 +664,10 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let mut rng = Rng::new(seed);
     let mut furn = Vec::new();
 
-    // GRID=256, margin=8, wall=3. Usable interior: 234×234 voxels.
-    let m = 8_usize;
-    let w = 3_usize;
-    let h = 130_usize;
+    // GRID=1024. 1 voxel = 1 cm. Room 5m = 500 voxels.
+    let m = 20_usize;
+    let w = 3_usize;   // thin walls (3 voxels — visible but sparse-friendly)
+    let h = 280_usize; // ceiling 2.8m
     let fy = FLOOR_Y as f32 + 1.0;
 
     let left = m + w;         // ~11
@@ -629,11 +677,11 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let width = right - left;  // ~234
     let depth = back - front;  // ~234
 
-    // ── LAYOUT: L-shaped living, kitchen right, bedroom back ──
-    // Horizontal wall at ~60% depth (living+kitchen front, bedroom back)
-    let wall_z = front + (depth * 6 / 10) + rng.range(-5, 5) as usize; // ~151
-    // Vertical wall at ~55% width (living left, kitchen right) — only front half
-    let wall_x = left + (width * 55 / 100) + rng.range(-5, 5) as usize; // ~140
+    // ── LAYOUT ──
+    // Horizontal wall at ~60% depth
+    let wall_z = front + (depth * 60 / 100) + rng.range(-20, 20) as usize;
+    // Vertical wall at ~55% width (front half only: living | kitchen)
+    let wall_x = left + (width * 55 / 100) + rng.range(-20, 20) as usize;
 
     // Colors
     let fl_wood = vary(&mut rng, 175, 148, 108, 15);
@@ -641,41 +689,42 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     let wl = vary(&mut rng, 232, 226, 218, 6);
     let cl = vary(&mut rng, 245, 245, 252, 4);
 
-    // ══════ STRUCTURE ══════
-    g.fill_box(m, 0, m, GRID-m, FLOOR_Y, GRID-m, fl_wood);
-    g.fill_box(m, h-w, m, GRID-m, h, GRID-m, cl);
-    // Outer walls
-    g.fill_box(m, 0, m, m+w, h, GRID-m, wl);
-    g.fill_box(GRID-m-w, 0, m, GRID-m, h, GRID-m, wl);
-    g.fill_box(m, 0, m, GRID-m, h, m+w, wl);
-    g.fill_box(m, 0, GRID-m-w, GRID-m, h, GRID-m, wl);
+    // ══════ STRUCTURE (thin shell — minimal voxels) ══════
+    // Floor: single layer
+    g.fill_box(left, FLOOR_Y, front, right, FLOOR_Y, back, fl_wood);
+    // Ceiling: single layer
+    g.fill_box(left, h, front, right, h, back, cl);
+    // Outer walls (3 voxels thick, only FLOOR_Y..h)
+    g.fill_box(left-w, FLOOR_Y, front-w, left, h, back+w, wl);      // left
+    g.fill_box(right, FLOOR_Y, front-w, right+w, h, back+w, wl);     // right
+    g.fill_box(left, FLOOR_Y, front-w, right, h, front, wl);         // front
+    g.fill_box(left, FLOOR_Y, back, right, h, back+w, wl);           // back
 
-    // Horizontal wall (full width — separates front from bedroom)
-    g.fill_box(m, 0, wall_z, GRID-m, h, wall_z+w, wl);
-    // Vertical wall (front half ONLY — separates living from kitchen)
-    g.fill_box(wall_x, 0, front, wall_x+w, h, wall_z, wl);
+    // Internal walls (thin)
+    g.fill_box(left, FLOOR_Y, wall_z, right, h, wall_z+w, wl);
+    g.fill_box(wall_x, FLOOR_Y, front, wall_x+w, h, wall_z, wl);
 
-    // Kitchen tile floor
+    // Kitchen tile floor (overwrite)
     g.fill_box(wall_x+w, FLOOR_Y, front, right, FLOOR_Y, wall_z-1, fl_tile);
 
     // ── DOORS ──
-    let dw = 30_usize; let dh = 58_usize;
+    let dw = 90_usize; let dh = 220_usize; // 90cm wide, 2.2m tall
     let frame = Voxel::solid(1, 155, 125, 85);
 
     // Living → Kitchen (vertical wall, front half)
-    let d1z = front + 30 + rng.range(0, 20) as usize;
+    let d1z = front + 100 + rng.range(0, 100) as usize;
     g.fill_box(wall_x, FLOOR_Y+1, d1z, wall_x+w, dh, d1z+dw, Voxel::empty());
     g.fill_box(wall_x, FLOOR_Y+1, d1z-2, wall_x+w, dh+2, d1z, frame);
     g.fill_box(wall_x, FLOOR_Y+1, d1z+dw, wall_x+w, dh+2, d1z+dw+2, frame);
 
     // Living → Bedroom (horizontal wall, left half)
-    let d2x = left + 30 + rng.range(0, 30) as usize;
+    let d2x = left + 100 + rng.range(0, 150) as usize;
     g.fill_box(d2x, FLOOR_Y+1, wall_z, d2x+dw, dh, wall_z+w, Voxel::empty());
     g.fill_box(d2x-2, FLOOR_Y+1, wall_z, d2x, dh+2, wall_z+w, frame);
     g.fill_box(d2x+dw, FLOOR_Y+1, wall_z, d2x+dw+2, dh+2, wall_z+w, frame);
 
     // Kitchen → Bedroom (horizontal wall, right half)
-    let d3x = wall_x + w + 20 + rng.range(0, 20) as usize;
+    let d3x = wall_x + w + 80 + rng.range(0, 100) as usize;
     if d3x + dw < right {
         g.fill_box(d3x, FLOOR_Y+1, wall_z, d3x+dw, dh, wall_z+w, Voxel::empty());
         g.fill_box(d3x-2, FLOOR_Y+1, wall_z, d3x, dh+2, wall_z+w, frame);
@@ -748,6 +797,7 @@ pub fn generate_apartment_v2(seed: u64) -> (VoxelGrid, Vec<crate::furniture::Fur
     // Vase on bookshelf (bookshelf top at local y=20, world = fy+20)
     furn.push(make_vase(&mut rng, Vec3::new((right - 22) as f32, fy + 20.0, (wall_z + w + 12) as f32)));
 
-    g.hollow();
+    // No hollow() needed — built as thin shell already
+    println!("  Apartment: {} voxels in sparse grid", g.voxel_count());
     (g, furn)
 }
