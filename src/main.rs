@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// PURRGE — Build 12 "Leopold"
+// PURRGE — Build 15 "Garfield"
 // Mesh pipeline (Surface Nets + PBR). No more cubes.
 // Procedural apartment, dog AI, parrot, meters, scoring.
 // ═══════════════════════════════════════════════════════════════
@@ -73,11 +73,64 @@ impl CatState {
 struct Input { forward:bool, back:bool, left:bool, right:bool, jump:bool, scratch_pressed:bool, sprint:bool }
 
 // ─── HUD helpers (NDC screen-space quads) ──────────────────
-/// Push a filled rectangle in NDC coords (-1..1) with color
 fn hud_bar(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) {
-    // Two triangles = 6 vertices, each = x,y, r,g,b,a
     for &(vx, vy) in &[(x,y), (x+w,y), (x+w,y+h), (x,y), (x+w,y+h), (x,y+h)] {
         verts.extend_from_slice(&[vx, vy, r, g, b, a]);
+    }
+}
+
+/// Tiny 5×7 bitmap font — render text as screen-space pixels
+fn hud_text(verts: &mut Vec<f32>, text: &str, mut x: f32, y: f32, scale: f32, r: f32, g: f32, b: f32) {
+    // Minimal ASCII font (uppercase + digits + $%:)
+    const FONT: &[(char, [u8; 7])] = &[
+        ('A', [0b01110,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001]),
+        ('B', [0b11110,0b10001,0b11110,0b10001,0b10001,0b10001,0b11110]),
+        ('C', [0b01110,0b10001,0b10000,0b10000,0b10000,0b10001,0b01110]),
+        ('D', [0b11100,0b10010,0b10001,0b10001,0b10001,0b10010,0b11100]),
+        ('E', [0b11111,0b10000,0b11110,0b10000,0b10000,0b10000,0b11111]),
+        ('I', [0b01110,0b00100,0b00100,0b00100,0b00100,0b00100,0b01110]),
+        ('K', [0b10001,0b10010,0b10100,0b11000,0b10100,0b10010,0b10001]),
+        ('L', [0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b11111]),
+        ('N', [0b10001,0b11001,0b10101,0b10011,0b10001,0b10001,0b10001]),
+        ('O', [0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110]),
+        ('R', [0b11110,0b10001,0b10001,0b11110,0b10100,0b10010,0b10001]),
+        ('S', [0b01110,0b10001,0b10000,0b01110,0b00001,0b10001,0b01110]),
+        ('T', [0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100]),
+        ('U', [0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110]),
+        ('V', [0b10001,0b10001,0b10001,0b10001,0b01010,0b01010,0b00100]),
+        ('X', [0b10001,0b10001,0b01010,0b00100,0b01010,0b10001,0b10001]),
+        ('Z', [0b11111,0b00001,0b00010,0b00100,0b01000,0b10000,0b11111]),
+        ('0', [0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110]),
+        ('1', [0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110]),
+        ('2', [0b01110,0b10001,0b00001,0b00110,0b01000,0b10000,0b11111]),
+        ('3', [0b01110,0b10001,0b00001,0b00110,0b00001,0b10001,0b01110]),
+        ('4', [0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010]),
+        ('5', [0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110]),
+        ('6', [0b01110,0b10000,0b11110,0b10001,0b10001,0b10001,0b01110]),
+        ('7', [0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000]),
+        ('8', [0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110]),
+        ('9', [0b01110,0b10001,0b10001,0b01111,0b00001,0b00001,0b01110]),
+        ('$', [0b00100,0b01111,0b10100,0b01110,0b00101,0b11110,0b00100]),
+        (':', [0b00000,0b00100,0b00100,0b00000,0b00100,0b00100,0b00000]),
+        ('/', [0b00001,0b00010,0b00010,0b00100,0b01000,0b01000,0b10000]),
+        (' ', [0b00000,0b00000,0b00000,0b00000,0b00000,0b00000,0b00000]),
+    ];
+
+    let pw = scale; let ph = scale;
+    for ch in text.chars() {
+        let uc = ch.to_ascii_uppercase();
+        if let Some((_, bits)) = FONT.iter().find(|(c, _)| *c == uc) {
+            for row in 0..7 {
+                for col in 0..5 {
+                    if bits[row] & (1 << (4 - col)) != 0 {
+                        let px = x + col as f32 * pw;
+                        let py = y - row as f32 * ph;
+                        hud_bar(verts, px, py, pw, ph, r, g, b, 1.0);
+                    }
+                }
+            }
+        }
+        x += 6.0 * pw; // char width + spacing
     }
 }
 
@@ -422,9 +475,35 @@ impl App {
         nx = nx.clamp(14.0, GRID as f32 - 14.0);
         nz = nz.clamp(14.0, GRID as f32 - 14.0);
 
-        let cat_r = 15.0; // ~15cm radius (cat body ~30cm wide, doors 90cm)
-        let can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
-        let can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
+        let cat_r = 15.0;
+        let cat_mass = 10.0_f32; // 10 kg cat
+        let mut can_x = !self.room.collides(nx, cat.z, cat.y, cat_r);
+        let mut can_z = !self.room.collides(cat.x, nz, cat.y, cat_r);
+
+        // Collision with furniture objects
+        let cat_min_x = nx - cat_r; let cat_max_x = nx + cat_r;
+        let cat_min_z = nz - cat_r; let cat_max_z = nz + cat_r;
+        for f in &mut self.furniture {
+            if f.shattered || f.falling { continue; }
+            let fmin = f.world_min(); let fmax = f.world_max();
+            // AABB overlap test (XZ plane, at cat Y height)
+            if cat_max_x > fmin.x && cat_min_x < fmax.x
+                && cat_max_z > fmin.z && cat_min_z < fmax.z
+                && cat.y > fmin.y && cat.y < fmax.y + 20.0 {
+                if f.mass < cat_mass * 2.0 {
+                    // Light object: PUSH it
+                    let push_x = (nx - (fmin.x + fmax.x) * 0.5).signum() * -spd * dt * 0.3;
+                    let push_z = (nz - (fmin.z + fmax.z) * 0.5).signum() * -spd * dt * 0.3;
+                    f.pos.x += push_x;
+                    f.pos.z += push_z;
+                    f.mesh_dirty = true;
+                } else {
+                    // Heavy object: BLOCK cat
+                    can_x = false;
+                    can_z = false;
+                }
+            }
+        }
 
         // BODY SLAM: running into objects knocks them over
         if moved && self.input.sprint {
@@ -666,7 +745,7 @@ impl App {
         if self.frame_count % 30 == 0 {
             if let Some(w) = &self.win {
                 let dog_s = if self.dog.is_sleeping() { "Zzz" } else if self.dog.is_blocking() { "!!" } else { "..." };
-                w.set_title(&format!("PURRGE Build 12 Leopold | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
+                w.set_title(&format!("PURRGE Build 15 Garfield | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
                     self.timer.clock_display(), self.meters.boredom, self.meters.annoyance,
                     self.meters.lives, self.bill.total(), dog_s));
             }
@@ -812,18 +891,21 @@ impl App {
 
         // ── MENU MODE: cinematic camera + title overlay ──
         if self.state.is_menu() {
-            let center = Vec3::new(GRID as f32 * 0.5, 40.0, GRID as f32 * 0.5);
-            let menu_angle = self.time * 0.15;
-            let eye = center + Vec3::new(menu_angle.sin() * 120.0, 100.0, menu_angle.cos() * 120.0);
+            let center = Vec3::new(GRID as f32 * 0.5, 150.0, GRID as f32 * 0.5);
+            let menu_angle = self.time * 0.12;
+            let eye = center + Vec3::new(menu_angle.sin() * 500.0, 400.0, menu_angle.cos() * 500.0);
 
-            // Menu HUD overlay
+            // Menu overlay with bitmap text
             let mut hud = Vec::new();
-            // Dark backdrop
-            hud_bar(&mut hud, -1.0, -0.15, 2.0, 0.3, 0.0, 0.0, 0.0, 0.7);
-            // Title bar (orange)
-            hud_bar(&mut hud, -0.6, 0.0, 1.2, 0.08, 0.9, 0.5, 0.1, 1.0);
-            // "Press SPACE" hint bar (dim)
-            hud_bar(&mut hud, -0.35, -0.1, 0.7, 0.04, 0.5, 0.5, 0.5, 0.8);
+            // Dark backdrop (semi-transparent)
+            hud_bar(&mut hud, -1.0, -0.25, 2.0, 0.5, 0.0, 0.0, 0.0, 0.65);
+            // Title "PURRGE" in big orange letters
+            hud_text(&mut hud, "PURRGE", -0.27, 0.12, 0.018, 0.95, 0.55, 0.1);
+            // Subtitle
+            hud_text(&mut hud, "BREAK EVERYTHING", -0.33, 0.02, 0.008, 0.7, 0.7, 0.7);
+            // Prompt (pulsing)
+            let pulse = 0.5 + 0.5 * (self.time * 3.0).sin();
+            hud_text(&mut hud, "PRESS SPACE TO PLAY", -0.35, -0.1, 0.007, pulse, pulse, pulse);
 
             renderer.upload_hud(&hud);
             renderer.render(eye, center, 0.0, self.time);
@@ -888,36 +970,43 @@ impl App {
             eye.y += (self.time * 53.0).cos() * amt;
         }
 
-        // ── HUD BARS ──
+        // ── HUD ──
         let mut hud = Vec::new();
-        let bar_h = 0.025;
-        let bar_y_start = 0.92;
-        let bar_w = 0.4;
+        let bar_h = 0.022;
+        let bar_w = 0.35;
         let bar_x = -0.95;
+        let lbl_scale = 0.005; // text pixel size
+        let lbl_x = bar_x;
 
-        // Background bars (dark)
-        hud_bar(&mut hud, bar_x, bar_y_start, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
-        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 1.5, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
-        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 3.0, bar_w, bar_h, 0.1, 0.1, 0.1, 0.6);
-
-        // Boredom bar (yellow → green as it decreases — high = bad)
+        // Row 1: BOREDOM
+        let y1 = 0.94;
+        hud_text(&mut hud, "BOREDOM", lbl_x, y1 + bar_h + 0.005, lbl_scale, 0.9, 0.85, 0.3);
+        hud_bar(&mut hud, bar_x, y1, bar_w, bar_h, 0.15, 0.15, 0.1, 0.5);
         let bored = self.meters.boredom / 100.0;
-        hud_bar(&mut hud, bar_x, bar_y_start, bar_w * bored, bar_h, 0.9, 0.8, 0.1, 0.9);
+        hud_bar(&mut hud, bar_x, y1, bar_w * bored, bar_h, 0.95, 0.85, 0.15, 0.9);
 
-        // Annoyance bar (red — high = thrown out)
+        // Row 2: ANNOYANCE
+        let y2 = y1 - bar_h * 2.5;
+        hud_text(&mut hud, "ANNOYANCE", lbl_x, y2 + bar_h + 0.005, lbl_scale, 0.9, 0.3, 0.2);
+        hud_bar(&mut hud, bar_x, y2, bar_w, bar_h, 0.15, 0.1, 0.1, 0.5);
         let annoy = self.meters.annoyance / 100.0;
-        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 1.5, bar_w * annoy, bar_h, 0.9, 0.2, 0.15, 0.9);
+        hud_bar(&mut hud, bar_x, y2, bar_w * annoy, bar_h, 0.95, 0.25, 0.15, 0.9);
 
-        // Damage $ bar (gold — grows with destruction)
+        // Row 3: DAMAGE $
+        let y3 = y2 - bar_h * 2.5;
+        let dmg_text = format!("${:.0}", self.bill.total());
+        hud_text(&mut hud, &dmg_text, lbl_x, y3 + bar_h + 0.005, lbl_scale, 0.95, 0.8, 0.2);
+        hud_bar(&mut hud, bar_x, y3, bar_w, bar_h, 0.12, 0.1, 0.05, 0.5);
         let dmg = (self.bill.total() / 5000.0).min(1.0);
-        hud_bar(&mut hud, bar_x, bar_y_start - bar_h * 3.0, bar_w * dmg, bar_h, 0.95, 0.75, 0.2, 0.9);
+        hud_bar(&mut hud, bar_x, y3, bar_w * dmg, bar_h, 0.95, 0.78, 0.2, 0.9);
 
-        // Lives dots (green circles → red)
+        // Lives (right side)
+        hud_text(&mut hud, "LIVES", 0.55, y1 + bar_h + 0.005, lbl_scale, 0.3, 0.9, 0.4);
         for i in 0..9 {
             let alive = (i as f32) < self.meters.lives as f32;
-            let dot_x = 0.55 + i as f32 * 0.045;
-            let (r, g, b) = if alive { (0.2, 0.85, 0.3) } else { (0.3, 0.15, 0.1) };
-            hud_bar(&mut hud, dot_x, bar_y_start, 0.03, bar_h, r, g, b, 0.9);
+            let dot_x = 0.55 + i as f32 * 0.042;
+            let (r, g, b) = if alive { (0.25, 0.9, 0.35) } else { (0.25, 0.12, 0.08) };
+            hud_bar(&mut hud, dot_x, y1, 0.028, bar_h, r, g, b, 0.9);
         }
 
         renderer.upload_hud(&hud);
@@ -930,7 +1019,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
         if self.win.is_some() { return; }
         let w = Arc::new(el.create_window(Window::default_attributes()
-            .with_title("PURRGE — Build 12 Leopold")
+            .with_title("PURRGE — Build 15 Garfield")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))).unwrap());
 
         // Don't grab cursor in menu — grab on game start
@@ -1036,7 +1125,7 @@ fn main() {
     env_logger::init();
     println!();
     println!("  ═══════════════════════════════════════");
-    println!("  \u{1F431} PURRGE — Build 12 \"Leopold\"");
+    println!("  \u{1F431} PURRGE — Build 15 \"Garfield\"");
     println!("     Mesh pipeline. Surface Nets. PBR.");
     println!("     No more cubes.");
     println!("  ═══════════════════════════════════════");
