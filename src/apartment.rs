@@ -150,7 +150,9 @@ impl VoxelGrid {
     pub fn floor_at(&self, x: f32, z: f32, from_y: f32) -> f32 {
         let ix = x as usize; let iz = z as usize;
         if ix >= GRID || iz >= GRID { return FLOOR_Y as f32 + 1.0; }
-        for y in (0..=(from_y as usize).min(GRID-1)).rev() {
+        let top = (from_y as usize).min(GRID - 1);
+        let bottom = top.saturating_sub(300); // search max 300 voxels (3m) down
+        for y in (bottom..=top).rev() {
             if self.get(ix, y, iz).is_solid() { return y as f32 + 1.0; }
         }
         FLOOR_Y as f32 + 1.0
