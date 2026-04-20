@@ -371,3 +371,120 @@ pub fn make_fridge(_rng: &mut Rng, pos: Vec3) -> FurnitureObj {
     f.brittleness = 0.05;
     f
 }
+
+/// Bed: 160×50×200 cm (double, with pillows + headboard)
+pub fn make_bed(rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Bed", pos, 160, 90, 200, 80.0, 1200.0);
+    let frame = vary(rng, 120, 80, 45, 10);
+    let bed_colors: [[u8;3]; 4] = [[205,205,215],[185,215,205],[215,195,195],[195,205,225]];
+    let bc = bed_colors[rng.range(0, 3) as usize];
+    let mattress = Voxel::solid(5, bc[0], bc[1], bc[2]);
+    let pillow = Voxel::solid(5, 240, 235, 225);
+    // Frame box (low)
+    f.fill_box(0, 0, 0, 159, 20, 199, frame);
+    // Mattress
+    f.fill_box(5, 20, 5, 154, 50, 194, mattress);
+    // 2 pillows at head (z near 0)
+    f.fill_box(10, 50, 5, 75, 65, 40, pillow);
+    f.fill_box(85, 50, 5, 150, 65, 40, pillow);
+    // Headboard (tall, back at z=0)
+    f.fill_box(0, 20, 0, 159, 89, 8, frame);
+    f.brittleness = 0.1;
+    f
+}
+
+/// Nightstand: 45×55×45 cm (little cabinet)
+pub fn make_nightstand(rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Nightstand", pos, 45, 55, 45, 8.0, 150.0);
+    let wood = vary(rng, 110, 75, 40, 10);
+    f.fill_box(0, 0, 0, 44, 54, 44, wood);
+    // Drawer slit
+    f.fill_box(5, 20, 0, 39, 22, 3, Voxel::solid(4, 140, 140, 145));
+    // Handle
+    f.fill_box(18, 15, 0, 26, 18, 2, Voxel::solid(4, 180, 170, 90));
+    f.brittleness = 0.2;
+    f
+}
+
+/// Wardrobe: 120×200×60 cm (tall closet)
+pub fn make_wardrobe(rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Wardrobe", pos, 120, 200, 60, 60.0, 800.0);
+    let wood = vary(rng, 130, 88, 50, 12);
+    f.fill_box(0, 0, 0, 119, 199, 59, wood);
+    // Door split down the middle
+    f.fill_box(59, 5, 0, 61, 195, 2, Voxel::solid(4, 80, 60, 40));
+    // Two handles
+    f.fill_box(50, 95, 0, 56, 105, 3, Voxel::solid(4, 180, 170, 90));
+    f.fill_box(64, 95, 0, 70, 105, 3, Voxel::solid(4, 180, 170, 90));
+    f.brittleness = 0.15;
+    f
+}
+
+/// Desk: 140×75×70 cm (writing desk with drawer)
+pub fn make_desk(rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Desk", pos, 140, 75, 70, 30.0, 500.0);
+    let wood = vary(rng, 115, 72, 38, 10);
+    let top = vary(rng, 138, 90, 48, 8);
+    // Solid side panels (acts as legs)
+    f.fill_box(0, 0, 0, 4, 70, 69, wood);
+    f.fill_box(135, 0, 0, 139, 70, 69, wood);
+    // Back panel
+    f.fill_box(5, 0, 0, 134, 70, 4, wood);
+    // Drawer unit on right
+    f.fill_box(95, 30, 5, 134, 70, 65, wood);
+    // Drawer slit
+    f.fill_box(95, 48, 5, 134, 50, 7, Voxel::solid(4, 140, 140, 145));
+    // Tabletop
+    f.fill_box(0, 70, 0, 139, 74, 69, top);
+    f.brittleness = 0.25;
+    f
+}
+
+/// Toilet: 40×75×60 cm (tank + bowl)
+pub fn make_toilet(_rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Toilet", pos, 40, 75, 60, 35.0, 400.0);
+    let porcelain = Voxel::solid(3, 245, 245, 248);
+    // Bowl (front)
+    for z in 0..40 { for y in 0..40 { for x in 0..40 {
+        let dx = x as f32 - 19.5; let dz = z as f32 - 19.5;
+        if dx*dx + dz*dz <= 380.0 && y > 10 { f.set(x, y, z, porcelain); }
+    }}}
+    // Base under bowl
+    f.fill_box(10, 0, 10, 30, 10, 30, porcelain);
+    // Tank (back)
+    f.fill_box(5, 35, 40, 35, 70, 58, porcelain);
+    // Seat line
+    f.fill_box(0, 38, 0, 39, 40, 40, Voxel::solid(4, 180, 180, 185));
+    f.brittleness = 0.95;
+    f
+}
+
+/// Sink: 60×90×45 cm (pedestal sink)
+pub fn make_sink(_rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Sink", pos, 60, 90, 45, 20.0, 300.0);
+    let porcelain = Voxel::solid(3, 245, 245, 248);
+    let metal = Voxel::solid(4, 200, 200, 210);
+    // Pedestal
+    f.fill_box(22, 0, 12, 37, 70, 33, porcelain);
+    // Basin (hollow box on top)
+    f.fill_box(0, 70, 0, 59, 88, 44, porcelain);
+    f.fill_box(5, 75, 5, 54, 88, 39, Voxel::empty());
+    // Faucet
+    f.fill_box(27, 88, 2, 32, 95, 8, metal);
+    f.brittleness = 0.85;
+    f
+}
+
+/// Bathtub: 180×55×80 cm
+pub fn make_bathtub(_rng: &mut Rng, pos: Vec3) -> FurnitureObj {
+    let mut f = FurnitureObj::new("Bathtub", pos, 180, 55, 80, 90.0, 1800.0);
+    let porcelain = Voxel::solid(3, 245, 245, 248);
+    // Outer hull
+    f.fill_box(0, 0, 0, 179, 54, 79, porcelain);
+    // Inner cavity
+    f.fill_box(6, 10, 6, 173, 54, 73, Voxel::empty());
+    // Faucet wall end
+    f.fill_box(170, 55, 30, 178, 70, 50, Voxel::solid(4, 200, 200, 210));
+    f.brittleness = 0.6;
+    f
+}

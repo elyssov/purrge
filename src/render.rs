@@ -143,46 +143,73 @@ impl Renderer {
     }
 
     /// Build all room chunks from sparse grid
+    /// One-pass bucketing: O(voxels) instead of O(voxels × chunks)
     pub fn upload_room(&mut self, room: &crate::apartment::VoxelGrid, grid_size: usize) {
         let cs = self.chunk_size;
         let cpa = (grid_size + cs - 1) / cs;
         self.chunks_per_axis = cpa;
         let total_chunks = cpa * cpa * cpa;
         self.room_chunks = (0..total_chunks).map(|_| None).collect();
+        let padded = cs + 2;
 
-        // Pre-compute occupied chunks (one pass over voxels)
-        let mut occupied = vec![false; total_chunks];
-        for &(vx, vy, vz) in room.data.keys() {
-            let cx = vx as usize / cs;
-            let cy = vy as usize / cs;
-            let cz = vz as usize / cs;
-            if cx < cpa && cy < cpa && cz < cpa {
-                occupied[cz * cpa * cpa + cy * cpa + cx] = true;
+        let t0 = std::time::Instant::now();
+
+        // ── PASS 1: Bucket voxels by chunk (single pass over HashMap) ──
+        // Each voxel goes into its own chunk + adjacent chunks (for border padding)
+        let mut buckets: Vec<Vec<(u16, u16, u16, Voxel)>> = (0..total_chunks).map(|_| Vec::new()).collect();
+
+        for (&(vx, vy, vz), &v) in &room.data {
+            // This voxel's home chunk
+            let home_cx = vx as usize / cs;
+            let home_cy = vy as usize / cs;
+            let home_cz = vz as usize / cs;
+
+            // Place into home chunk + neighbor chunks that need it as border
+            // A chunk at (cx,cy,cz) covers world [cx*cs .. (cx+1)*cs-1]
+            // Its padded region needs [cx*cs-1 .. (cx+1)*cs] (one extra on each side)
+            // So this voxel (vx,vy,vz) is needed by chunk (cx,cy,cz) if:
+            //   cx*cs - 1 <= vx <= (cx+1)*cs  →  cx = (vx+1)/cs .. vx/cs (if on boundary)
+            for dcz in -1i32..=1 {
+                for dcy in -1i32..=1 {
+                    for dcx in -1i32..=1 {
+                        let cx = home_cx as i32 + dcx;
+                        let cy = home_cy as i32 + dcy;
+                        let cz = home_cz as i32 + dcz;
+                        if cx < 0 || cy < 0 || cz < 0 { continue; }
+                        let (cx, cy, cz) = (cx as usize, cy as usize, cz as usize);
+                        if cx >= cpa || cy >= cpa || cz >= cpa { continue; }
+
+                        let x0 = cx * cs;
+                        let y0 = cy * cs;
+                        let z0 = cz * cs;
+                        let lx = vx as i32 - x0 as i32 + 1;
+                        let ly = vy as i32 - y0 as i32 + 1;
+                        let lz = vz as i32 - z0 as i32 + 1;
+                        if lx >= 0 && ly >= 0 && lz >= 0
+                            && (lx as usize) < padded && (ly as usize) < padded && (lz as usize) < padded {
+                            let idx = cz * cpa * cpa + cy * cpa + cx;
+                            buckets[idx].push((lx as u16, ly as u16, lz as u16, v));
+                        }
+                    }
+                }
             }
         }
 
-        // Build occupied chunks ONE AT A TIME (minimal memory)
-        let padded = cs + 2;
+        // ── PASS 2: Mesh each non-empty bucket ──
         let mut total_tris = 0;
         let mut built_chunks = 0;
         for idx in 0..total_chunks {
-            if !occupied[idx] { continue; }
+            if buckets[idx].is_empty() { continue; }
             let cz = idx / (cpa * cpa);
             let cy = (idx / cpa) % cpa;
             let cx = idx % cpa;
-            let x0 = cx * cs; let y0 = cy * cs; let z0 = cz * cs;
+            let x0 = cx * cs;
+            let y0 = cy * cs;
+            let z0 = cz * cs;
 
-            // Build flat array for this chunk only (iterate voxels in range)
             let mut flat = vec![Voxel::empty(); padded * padded * padded];
-            for (&(vx, vy, vz), &v) in &room.data {
-                let gx = vx as i32; let gy = vy as i32; let gz = vz as i32;
-                let lx = gx - x0 as i32 + 1;
-                let ly = gy - y0 as i32 + 1;
-                let lz = gz - z0 as i32 + 1;
-                if lx >= 0 && ly >= 0 && lz >= 0
-                    && (lx as usize) < padded && (ly as usize) < padded && (lz as usize) < padded {
-                    flat[lz as usize * padded * padded + ly as usize * padded + lx as usize] = v;
-                }
+            for &(lx, ly, lz, v) in &buckets[idx] {
+                flat[lz as usize * padded * padded + ly as usize * padded + lx as usize] = v;
             }
 
             let offset = Vec3::new(x0 as f32 - 1.0, y0 as f32 - 1.0, z0 as f32 - 1.0);
@@ -191,8 +218,10 @@ impl Renderer {
             self.room_chunks[idx] = GpuMesh::from_chunk_mesh(&self.device, &mesh);
             built_chunks += 1;
         }
-        println!("  Room: {}/{} chunks ({}³), {} tris, {} voxels",
-            built_chunks, total_chunks, cs, total_tris, room.voxel_count());
+
+        let elapsed = t0.elapsed();
+        println!("  Room: {}/{} chunks ({}³), {} tris, {} voxels — built in {:.1}s",
+            built_chunks, total_chunks, cs, total_tris, room.voxel_count(), elapsed.as_secs_f32());
     }
 
     /// Rebuild a single chunk (after scratch damage)

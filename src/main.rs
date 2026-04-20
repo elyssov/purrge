@@ -1,8 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
-// PURRGE — Build 15 "Garfield"
+// PURRGE — Build 16 "Endeavour"
 // Mesh pipeline (Surface Nets + PBR). No more cubes.
 // Procedural apartment, dog AI, parrot, meters, scoring.
 // ═══════════════════════════════════════════════════════════════
+
+const BUILD_TAG: &str = "B16 Catnip 2026-04-08";
 
 mod core;
 mod game;
@@ -42,6 +44,7 @@ const DOG_INTERNAL_SCALE: f32 = 1.8;
 const DOG_WORLD_SCALE: f32 = 0.30;     // slightly smaller than cat
 
 const LEG_HEIGHT: f32 = 10.5;   // cat legs: 30 voxels × 0.35 world_scale = 10.5 cm
+const DOG_PELVIS_LOCAL_Y: f32 = 24.0; // dog root_position.y = half * 0.5 = 48 * 0.5
 const MOVE_SPEED: f32 = 150.0;  // 1.5 m/s walk
 const GRAVITY: f32 = 981.0;     // 9.81 m/s² in cm/s²
 const JUMP_VEL: f32 = 300.0;    // ~3 m/s jump (cats jump high)
@@ -122,6 +125,8 @@ fn hud_text(verts: &mut Vec<f32>, text: &str, mut x: f32, y: f32, scale: f32, r:
         ('$', [0b00100,0b01111,0b10100,0b01110,0b00101,0b11110,0b00100]),
         (':', [0b00000,0b00100,0b00100,0b00000,0b00100,0b00100,0b00000]),
         ('/', [0b00001,0b00010,0b00010,0b00100,0b01000,0b01000,0b10000]),
+        ('.', [0b00000,0b00000,0b00000,0b00000,0b00000,0b00100,0b00100]),
+        ('-', [0b00000,0b00000,0b00000,0b01110,0b00000,0b00000,0b00000]),
         (' ', [0b00000,0b00000,0b00000,0b00000,0b00000,0b00000,0b00000]),
     ];
 
@@ -546,21 +551,37 @@ impl App {
         let walk_speed = if self.input.sprint { 2.5 } else { 1.2 };
         if cat.moving { cat.walk_phase += dt * walk_speed; }
 
-        // Jump
-        if self.input.jump && cat.vy.abs() < 1.0 {
-            let fl = self.room.floor_at(cat.x, cat.z, cat.y);
-            if (cat.y - LEG_HEIGHT - fl).abs() < 3.0 { cat.vy = JUMP_VEL; }
-        }
-        cat.vy -= GRAVITY * dt;
-        cat.y += cat.vy * dt;
-        let fl = self.room.floor_at(cat.x, cat.z, cat.y + LEG_HEIGHT);
+        // Gravity + vertical movement
+        let fl = self.room.floor_at(cat.x, cat.z, cat.y + LEG_HEIGHT + 50.0);
         let min_y = fl + LEG_HEIGHT;
-        cat.in_air = cat.vy.abs() > 2.0 || (cat.y - min_y) > 1.5;
-        if cat.y < min_y {
+
+        // Jump (only when on ground)
+        if self.input.jump && !cat.in_air && (cat.y - min_y).abs() < 2.0 {
+            cat.vy = JUMP_VEL;
+        }
+
+        // Apply gravity only when above floor
+        if cat.y > min_y + 0.5 || cat.vy > 0.0 {
+            cat.vy -= GRAVITY * dt;
+        }
+        cat.y += cat.vy * dt;
+
+        // Floor correction — THEN set in_air
+        if cat.y <= min_y {
             if cat.vy < -10.0 { cat.land_timer = 0.2; }
-            cat.y = min_y; cat.vy = 0.0; cat.in_air = false;
+            cat.y = min_y;
+            cat.vy = 0.0;
+            cat.in_air = false;
+        } else {
+            cat.in_air = (cat.y - min_y) > 1.5;
         }
         if cat.land_timer > 0.0 { cat.land_timer -= dt; }
+
+        // Debug print first 10 frames
+        if self.frame_count < 10 {
+            println!("  [F{}] cat.y={:.1} fl={:.1} min_y={:.1} in_air={} vy={:.1}",
+                self.frame_count, cat.y, fl, min_y, cat.in_air, cat.vy);
+        }
 
         // Dog AI
         let noise = if cat.scratching && cat.scratch_fired { 0.6 } else { 0.0 };
@@ -667,51 +688,102 @@ impl App {
         self.physics.bodies.retain(|b| b.active && b.pos.y > -50.0);
 
         // Furniture support check — objects without support START FALLING
-        // Check room grid AND other furniture for support below
+        // Check if ACTUAL bottom voxels rest on something (floor, room grid, other furniture)
         let furn_count = self.furniture.len();
+        let floor_world_y = FLOOR_Y as f32 + 1.0;
         for i in 0..furn_count {
             if self.furniture[i].falling || self.furniture[i].shattered { continue; }
-            // Object on floor level = always supported
-            if self.furniture[i].pos.y <= FLOOR_Y as f32 + 2.0 { continue; }
+            if self.furniture[i].voxels.is_empty() { continue; }
 
-            let mut supported = false;
-
-            // Find lowest Y per (x,z) column, check support below
-            // Sparse: iterate all voxels, find min Y per column
+            // Find global lowest voxel Y and lowest Y per column
+            let mut global_min_y = u16::MAX;
             let mut min_y_per_col: std::collections::HashMap<(u16,u16), u16> = std::collections::HashMap::new();
             for &(x, y, z) in self.furniture[i].voxels.keys() {
+                if y < global_min_y { global_min_y = y; }
                 let entry = min_y_per_col.entry((x, z)).or_insert(y);
                 if y < *entry { *entry = y; }
             }
 
-            'outer: for (&(x, z), &min_y) in &min_y_per_col {
+            // World Y of bottom-most voxel
+            let bottom_world_y = self.furniture[i].pos.y + global_min_y as f32;
+
+            // If bottom voxels are ON the floor (within 2cm), object is supported
+            if bottom_world_y <= floor_world_y + 2.0 {
+                continue;
+            }
+
+            // Bottom voxels are ABOVE floor — check if something supports them
+            let mut support_count = 0u32;
+            let mut unsupport_count = 0u32;
+            let mut support_sum_x = 0.0_f32;
+            let mut support_sum_z = 0.0_f32;
+            let mut total_sum_x = 0.0_f32;
+            let mut total_sum_z = 0.0_f32;
+
+            for (&(x, z), &min_y) in &min_y_per_col {
                 let wx = self.furniture[i].pos.x + x as f32;
                 let wy = self.furniture[i].pos.y + min_y as f32 - 1.0;
                 let wz = self.furniture[i].pos.z + z as f32;
+                total_sum_x += wx;
+                total_sum_z += wz;
+
+                let mut col_supported = false;
 
                 // Check room grid
                 let rwx = wx as usize; let rwy = wy as usize; let rwz = wz as usize;
                 if rwx < GRID && rwy < GRID && rwz < GRID && self.room.get(rwx, rwy, rwz).is_solid() {
-                    supported = true;
-                    break 'outer;
+                    col_supported = true;
                 }
 
                 // Check OTHER furniture
-                for j in 0..furn_count {
-                    if j == i { continue; }
-                    if self.furniture[j].falling || self.furniture[j].shattered { continue; }
-                    if self.furniture[j].contains_world(wx, wy, wz) {
-                        supported = true;
-                        break 'outer;
+                if !col_supported {
+                    for j in 0..furn_count {
+                        if j == i { continue; }
+                        if self.furniture[j].falling || self.furniture[j].shattered { continue; }
+                        if self.furniture[j].contains_world(wx, wy, wz) {
+                            col_supported = true;
+                            break;
+                        }
                     }
+                }
+
+                if col_supported {
+                    support_count += 1;
+                    support_sum_x += wx;
+                    support_sum_z += wz;
+                } else {
+                    unsupport_count += 1;
                 }
             }
 
-            if !supported {
+            let total_cols = support_count + unsupport_count;
+            if total_cols == 0 { continue; }
+
+            if support_count == 0 {
+                // NO support at all — straight fall
                 self.furniture[i].falling = true;
                 self.furniture[i].vel = Vec3::new(0.0, -5.0, 0.0);
-                println!("  {} lost support — FALLING!", self.furniture[i].name);
+                println!("  {} lost ALL support — FALLING!", self.furniture[i].name);
+            } else if support_count < total_cols / 3 {
+                // Partial support (< 33%) — TIP OVER!
+                // Tip direction: from support centroid toward center of mass
+                let cx = total_sum_x / total_cols as f32;
+                let cz = total_sum_z / total_cols as f32;
+                let sx = support_sum_x / support_count as f32;
+                let sz = support_sum_z / support_count as f32;
+                let tip_dx = cx - sx;
+                let tip_dz = cz - sz;
+                let tip_len = (tip_dx * tip_dx + tip_dz * tip_dz).sqrt().max(1.0);
+
+                self.furniture[i].falling = true;
+                self.furniture[i].vel = Vec3::new(
+                    tip_dx / tip_len * 30.0,  // tip sideways
+                    -5.0,                      // fall down
+                    tip_dz / tip_len * 30.0,
+                );
+                println!("  {} TIPPING! support={}/{}", self.furniture[i].name, support_count, total_cols);
             }
+            // else: enough support — stays
         }
 
         // Update falling furniture
@@ -754,7 +826,8 @@ impl App {
         if self.frame_count % 30 == 0 {
             if let Some(w) = &self.win {
                 let dog_s = if self.dog.is_sleeping() { "Zzz" } else if self.dog.is_blocking() { "!!" } else { "..." };
-                w.set_title(&format!("PURRGE Build 15 Garfield | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
+                w.set_title(&format!("PURRGE {} | {} | Boredom:{:.0}% | Annoy:{:.0}% | Lives:{} | ${:.0} | Dog:{}",
+                    BUILD_TAG,
                     self.timer.clock_display(), self.meters.boredom, self.meters.annoyance,
                     self.meters.lives, self.bill.total(), dog_s));
             }
@@ -877,7 +950,9 @@ impl App {
                 &dog_voxels, DOG_GRID,
                 Vec3::new(
                     self.dog.x - DOG_GRID as f32 * 0.5 * ws,
-                    FLOOR_Y as f32,
+                    // Dog back legs: hip→thigh(12.6)→shin(9.0) = 21.6 below pelvis(y=24)
+                    // feet_local ≈ 2.4. offset = floor - feet_local * ws
+                    (FLOOR_Y as f32 + 1.0) - 2.4 * ws,
                     self.dog.z - DOG_GRID as f32 * 0.5 * ws,
                 ),
                 ws,
@@ -919,7 +994,7 @@ impl App {
             renderer.upload_hud(&hud);
             renderer.render(eye, center, 0.0, self.time);
             if let Some(w) = &self.win {
-                w.set_title("PURRGE — Press SPACE / Enter / Click to play!");
+                w.set_title(&format!("PURRGE {} — Press SPACE / Enter / Click to play!", BUILD_TAG));
             }
             self.win.as_ref().unwrap().request_redraw();
             return;
@@ -1018,6 +1093,19 @@ impl App {
             hud_bar(&mut hud, dot_x, y1, 0.028, bar_h, r, g, b, 0.9);
         }
 
+        // Build tag (top-right, always visible)
+        hud_text(&mut hud, BUILD_TAG, 0.25, 0.97, 0.004, 0.5, 0.5, 0.5);
+
+        // Debug: cat state (top-center, first 300 frames then every 60)
+        if self.frame_count < 300 || self.frame_count % 60 == 0 {
+            let dbg = format!("Y:{:.1} FL:{:.1} AIR:{} MV:{}",
+                self.cat.y,
+                self.room.floor_at(self.cat.x, self.cat.z, self.cat.y + LEG_HEIGHT),
+                if self.cat.in_air { 1 } else { 0 },
+                if self.cat.moving { 1 } else { 0 });
+            hud_text(&mut hud, &dbg, -0.45, -0.92, 0.004, 0.3, 0.9, 0.3);
+        }
+
         renderer.upload_hud(&hud);
         renderer.render(eye, target, self.screen_shake, self.time);
         self.win.as_ref().unwrap().request_redraw();
@@ -1028,7 +1116,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
         if self.win.is_some() { return; }
         let w = Arc::new(el.create_window(Window::default_attributes()
-            .with_title("PURRGE — Build 15 Garfield")
+            .with_title(&format!("PURRGE — {}", BUILD_TAG))
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))).unwrap());
 
         // Don't grab cursor in menu — grab on game start
