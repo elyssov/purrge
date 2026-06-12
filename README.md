@@ -1,5 +1,7 @@
 # PURRGE 🐱💥
 
+> ⏸ **ON HOLD (12 June 2026).** Focus shifted to other projects. Resumption date — TBD.
+
 **Kawaii roguelike-puzzle about a cat destroying an apartment while the owner is at work.**
 
 *Purr + Purge = PURRGE*
